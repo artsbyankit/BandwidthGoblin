@@ -1,0 +1,30 @@
+# Runtime artifacts - never commit these
+__pycache__/
+*.pyc
+logs/
+perf.jsonl
+history.jsonl
+.lastdir
+*.resume
+*.resume.tmp
+*.progress
+
+# Platform packs (pack/*) carry their own runtime state when run in place
+pack/*/logs/
+pack/*/perf.jsonl
+pack/*/history.jsonl
+pack/*/.lastdir
+pack/*/__pycache__/
+pack/*/*.pyc
+
+# QA test outputs (tests/)
+tests/*.bin
+tests/*.resume
+tests/*.progress
+tests/out*/
+tests/*_out/
+tests/verify_tmp/
+
+# OS junk
+.DS_Store
+Thumbs.db
