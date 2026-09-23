@@ -48,6 +48,10 @@ your driveway. BandwidthGoblin hijacks all four vans at once.
 
 ## Quick start
 
+> **First feed the goblin: it runs on Python.** Grab the free installer from
+> 👉 **[python.org/downloads](https://www.python.org/downloads/)** — on
+> Windows, tick **“Add python.exe to PATH”** during setup, then come back here.
+
 ```
 # Windows - double-click RUN.bat          (or:)
 py bandwidthgoblin.py

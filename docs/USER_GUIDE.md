@@ -14,7 +14,11 @@ single-connection 140 MB run at 11.2 MB/s.</span>
 
 <span style="color:#9ca3af">Setup, one time: connect phones with USB cables, turn on USB tethering
 (Android: Settings → USB tethering. iPhone: Personal Hotspot ON + Trust).
-Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.</span>
+Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.
+
+Need Python? Grab the free installer from
+👉 <span style="color:#facc15">[python.org/downloads](https://www.python.org/downloads/)</span>
+(Windows: tick "Add python.exe to PATH" during setup).</span>
 
 1. <span style="color:#facc15">Copy a download link</span> (one or several, one per line).
 2. Double-click <span style="color:#facc15">`RUN.bat`</span> (opens Windows Terminal with the live dashboard).

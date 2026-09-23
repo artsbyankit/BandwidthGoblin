@@ -16,6 +16,9 @@ Setup, one time: connect phones with USB cables, turn on USB tethering
 (Android: Settings → USB tethering. iPhone: Personal Hotspot ON + Trust).
 Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.
 
+Need Python? Grab the free installer: https://www.python.org/downloads/
+(Windows: tick "Add python.exe to PATH" during setup).
+
 1. Copy a download link (one or several, one per line).
 2. Double-click `RUN.bat` (opens Windows Terminal with the live dashboard).
 3. Link first: clipboard link is offered - Enter uses it,
