@@ -70,7 +70,7 @@ if not defined PY (
     winget install --id Python.Python.3.13 --exact --silent --accept-package-agreements --accept-source-agreements --scope user --disable-interactivity
     if !errorlevel!==0 (
       echo.
-      echo   Python installed - starting LinkBoost...
+      echo   Python installed - starting BandwidthGoblin...
       ping 127.0.0.1 -n 2 >nul
       call "%~f0"
       exit /b
@@ -88,8 +88,8 @@ if not defined PY (
 
 where wt.exe >nul 2>nul
 if %errorlevel%==0 (
-  wt.exe -d "%CD%" cmd /c ""%PY%" linkboost.py || pause"
+  wt.exe -d "%CD%" cmd /c ""%PY%" bandwidthgoblin.py || pause"
 ) else (
-  "%PY%" linkboost.py
+  "%PY%" bandwidthgoblin.py
   pause
 )

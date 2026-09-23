@@ -1,4 +1,4 @@
-LinkBoost - Linux
+BandwidthGoblin - Linux
 =================
 
 WHAT IT DOES

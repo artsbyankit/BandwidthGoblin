@@ -1,69 +1,80 @@
-# LinkBoost — Promo & Ad Copy
+# 👺 BandwidthGoblin — Promo & Ad Copy
 
-> Ready-to-use marketing text. Free to paste into an app store listing, a
-> product-hunt post, a tweet, or a landing page. Friendly, simple, honest.
+<div align="center">
+
+<img src="logo.png" alt="BandwidthGoblin 👺" width="96"/>
+
+Feeds on every internet connection your machine has. Zero cloud, zero
+accounts, pure feral speed.
+
+</div>
+
+> Ready-to-use marketing text — free to paste into an app store listing, a
+> product-hunt post, a tweet, or a landing page.
 
 ---
 
 ## One-liners (taglines)
 
-- **One download. All your internet. Done faster.**
-- Your WiFi and your phone's hotspot, pulling together.
-- Big files, every connection you own, working as one.
-- Stop waiting on single-lane downloads.
-- Paste. Pick. Watch it fly.
+- Feed the goblin. Get your files faster.
+- Why let idle Wi-Fi sit there when your phone hotspot is right next to it?
+- Sucking bandwidth from every network adapter on your motherboard simultaneously.
+- Single-lane downloading is for cowards.
+- Paste link. Release the goblin. Watch it fly.
 
 ## Short blurb (social / store description)
 
-**LinkBoost** downloads one file using *every internet connection your
-computer has* — home WiFi, LAN cable, USB-tethered phone, mobile hotspot —
-all at the same time. A big game update, movie, or installer that takes
-"forever" on one connection arrives in a fraction of the time.
+BandwidthGoblin doesn't ask nicely — it scavenges every active internet
+connection your computer owns (home Wi-Fi, Ethernet cable, 5G phone tether,
+coffee shop guest network) and stitches them into a single hyper-threaded
+downloader. That massive game patch or ISO that takes 3 hours on one
+connection drops down to a fraction of the time.
 
-No accounts, no cloud, no subscription. One small file, nothing to install,
-works on Windows, macOS, and Linux.
+No accounts, no telemetry, no subscription bloatware. One lightweight script.
+Works on Windows, macOS, and Linux.
 
 ## Longer story (landing page)
 
-**Paste a link. LinkBoost does the rest.**
+**Paste a link. BandwidthGoblin gobbles the rest.**
 
-Imagine 100 boxes arriving from a warehouse. One delivery van makes trip after
-trip — it can take all day. Now imagine you could grab **every van in the
-yard**. That's LinkBoost, but for downloads.
+Imagine ordering 100 packages online. Normal downloaders send one delivery
+driver to fetch them one by one while three other delivery vans sit idle in
+your driveway.
 
-Every computer today quietly has *more than one* way to reach the internet:
-a LAN cable and WiFi, or your phone's hotspot and your broadband. Regular
-downloaders pick one and let the others sit idle. LinkBoost puts them all to
-work, splitting the file between them, then double-checking the finished file
-is complete and correct.
+BandwidthGoblin hijacks all four vans at once.
 
-It's safe, it's free, and it works with the links you already use — game
-launchers, cloud storage, direct downloads from websites.
+Your machine almost always has redundant paths to the web: Ethernet + Wi-Fi,
+or home broadband + phone tethering. Regular apps ignore the extra pipes.
+BandwidthGoblin binds raw sockets across every network interface, splits the
+download into chunks, pulls them in parallel, and stitches the file back
+together with zero corruption.
 
-## Better together (when it shines)
+Free, open-source, and entirely local.
 
-- 🌐 **Big game updates** — that 60 GB patch, in less time.
-- 🎬 **Movies and installers** — large files, dramatically shorter waits.
-- 📱 **On the go** — hotspot + hotel WiFi, using both.
-- 📦 **Batch jobs** — point it at a list of links and run up to 8 at once.
+## When it goes feral (use cases)
+
+- 🌐 **60 GB Game Patches** — finish downloading before your mates even open Discord.
+- 🎬 **Fat ISOs & Movies** — high-throughput direct downloads without throttled single-stream limits.
+- 📱 **Desperate Hotspotting** — combine sketchy hotel Wi-Fi with cellular data when neither works alone.
+- 📦 **Batch Slurping** — feed it up to 8 links at once and let it hoard data in parallel.
 
 ## The honest fine print
 
-**LinkBoost is in public beta (v2.0).** It's built on a deep automated test
-suite and is used daily, but real life has surprises — and your feedback is
-exactly what turns beta into 1.0.
+**BandwidthGoblin is in public beta (v2.0).** It works, but real-world
+networking is a mess.
 
-- **Where the speed comes from:** two *genuinely separate* connections
-  (broadband WiFi + a phone hotspot on a different network) give the biggest
-  gain. If both links share the same bottleneck — e.g. a capped home pipe —
-  the download still completes safely, just without the speed boost.
-- **Token/signed links expire** — copy a fresh one if a download stops.
-- **You need Python 3.8+** (Windows: from python.org; the Microsoft Store
-  "python" shortcut does not work).
+- **Where the speed comes from:** two *actually different* networks (e.g.
+  Fiber Wi-Fi + Mobile 5G) will unleash maximum speed. If both interfaces
+  feed off the same capped home router, the goblin still works safely — it
+  just won't magically break physics.
+- **Signed URL Expiry:** if a link has a temporary token that expires
+  mid-download, feed the goblin a fresh URL.
+- **Python 3.8+ Required:** run it natively through Python (Windows users:
+  grab it from python.org, skip the Microsoft Store dummy app).
 
 ## Try it
 
-Copy a download link, run LinkBoost, and watch every connection on your
+Copy a download link, run BandwidthGoblin, and watch every connection on your
 computer go to work. It's free — no accounts, no cloud, nothing to install.
 
 - **[Friendly guide](USER_GUIDE.md)** — plain-language manual

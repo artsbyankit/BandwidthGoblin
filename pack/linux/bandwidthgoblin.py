@@ -1,4 +1,4 @@
-"""LinkBoost Downloader: download ONE file over ALL your internet links
+"""BandwidthGoblin: download ONE file over ALL your internet links
 (LAN + USB-tethered phones) at the same time, with resume, work-stealing,
 hot-plug and a live dashboard. Stdlib only."""
 import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64
@@ -28,8 +28,24 @@ if sys.stdout is None:
     except Exception:
         pass
 
+# Output streams may use an ANSI code page (cp1252 on many Windows boxes) that
+# cannot encode non-Latin glyphs. Reconfigure to error-replace so the 👺 logo
+# banner prints as '?' on legacy consoles and shows for real on UTF-8
+# terminals, instead of silently shredding all further output (build 40 bug:
+# _safe_print switched stdout to devnull after the first unencodable print).
+try:
+    if sys.stdout is not None:
+        sys.stdout.reconfigure(errors='replace')
+except Exception:
+    pass
+try:
+    if sys.stderr is not None:
+        sys.stderr.reconfigure(errors='replace')
+except Exception:
+    pass
+
 VERSION = '2.0'
-BUILD = 38
+BUILD = 41
 BETA = True  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
@@ -534,7 +550,7 @@ V_ETAG = ''                                    # validator from head() used for 
 V_LM = ''
 RANGE_VERIFIED = False                         # server proven to serve real 206 ranges
 VALIDATOR_BROKEN = False                       # If-Range/ETag proven unstable -> stop sending If-Range (build 36)
-EXPECT_SHA = ''                                # optional sha256 from LINKBOOST_SHA256
+EXPECT_SHA = ''                                # optional sha256 from BANDWIDTHGOBLIN_SHA256
 OPEN_AFTER = None                              # None=open folder only in tty; True=always; False=never
 EXTRA_HEADERS = {}                             # extra request headers (referer/cookie/custom)
 PAUSED = False                                 # soft pause (P key): keep sockets, stall workers/steals
@@ -594,7 +610,7 @@ def _install_crash_hooks():
             txt = ''.join(traceback.format_exception(t, v, tb))
             try:
                 if LOGFILE:
-                    with open(LOGFILE, 'a') as _f: _f.write(txt + '\n')
+                    with open(LOGFILE, 'a', errors='replace') as _f: _f.write(txt + '\n')
             except Exception:
                 pass
         finally:
@@ -692,7 +708,7 @@ def log(msg):
             print(out_line, flush=True)
     if LOGFILE and not NO_LOG:
         with LOGLOCK:
-            with open(LOGFILE, 'a') as lf: lf.write(_ANSI.sub('', line) + '\n')
+            with open(LOGFILE, 'a', errors='replace') as lf: lf.write(_ANSI.sub('', line) + '\n')
 
 def _prune_logs(d, keep=20):
     try:
@@ -1313,7 +1329,7 @@ def dash(out, use, nchunks):
             for _ni, _nip in enumerate(list(use)):
                 _LCMAP[_nip] = _LCC[_ni % len(_LCC)]
             L = [top,
-                 row(f"{C['bld']}{C['cyan']}LINKBOOST v{VERSION} b{BUILD}{_VER_LABEL}{C['rst']}  {C['dim']}{name}{C['rst']}  {_pcc}{C['bld']}{_pc:5.1f}%{C['rst']}"),
+                 row(f"{C['bld']}{C['cyan']}BANDWIDTHGOBLIN v{VERSION} b{BUILD}{_VER_LABEL}{C['rst']}  {C['dim']}{name}{C['rst']}  {_pcc}{C['bld']}{_pc:5.1f}%{C['rst']}"),
                  row(f"{C['inv']}{C['bld']}  ▼ {ema_tot/1e6:6.2f} MB/s  {C['rst']}  {C['dim']}{tot/1e6:,.1f}/{TOTAL_SIZE/1e6:,.1f} MB  ETA {etas}  el {int(el)//60:02d}:{int(el)%60:02d}{C['rst']}"),
                  row(f"{meter(pct, W - 14, _pcc)} {_pcc}{C['bld']}{_pc:4.1f}%{C['rst']}"),
                  mid]
@@ -2076,7 +2092,7 @@ def print_eta(host, mb):
     try:
         mb = float(mb)
     except Exception:
-        print('usage: linkboost.py --eta <host-part> <MB>')
+        print('usage: bandwidthgoblin.py --eta <host-part> <MB>')
         return
     recs = [r for r in _load_perf() if r.get('type') == 'chunk' and r.get('outcome', 'done') == 'done'
             and host.lower() in (r.get('host') or '').lower() and r.get('mbps', 0) > 0]
@@ -2289,22 +2305,22 @@ def _pick_resume():
 
 def _usage():
     return ('usage:\n'
-            '  linkboost.py                         interactive (paste a link after prompt)\n'
-            '  linkboost.py URL OUT [16 auto]       direct download\n'
-            '  linkboost.py --queue list.txt [--out-dir D:\\dl]\n'
+            '  bandwidthgoblin.py                         interactive (paste a link after prompt)\n'
+            '  bandwidthgoblin.py URL OUT [16 auto]       direct download\n'
+            '  bandwidthgoblin.py --queue list.txt [--out-dir D:\\dl]\n'
             '                                      batch - one URL per line in the file\n'
-            '  linkboost.py URL --out-dir D:\\dl     save straight into a folder\n'
-            '  linkboost.py --dry-run URL ...       probe links: size, type, ranges, learned speed\n'
-            '  linkboost.py --sha <sha256> URL OUT  deep-verify against a hash\n'
-            '  linkboost.py --history               show the last 10 completed downloads\n'
-            '  linkboost.py --resume                continue the newest saved .resume download\n'
-            '  linkboost.py --speedtest URL         measure each link + combined speed (8 MB cap)\n'
-            '  linkboost.py --help                  this text\n\n'
+            '  bandwidthgoblin.py URL --out-dir D:\\dl     save straight into a folder\n'
+            '  bandwidthgoblin.py --dry-run URL ...       probe links: size, type, ranges, learned speed\n'
+            '  bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash\n'
+            '  bandwidthgoblin.py --history               show the last 10 completed downloads\n'
+            '  bandwidthgoblin.py --resume                continue the newest saved .resume download\n'
+            '  bandwidthgoblin.py --speedtest URL         measure each link + combined speed (8 MB cap)\n'
+            '  bandwidthgoblin.py --help                  this text\n\n'
             'flags (any position, also env):\n'
             '  --queue FILE   --out-dir DIR   --dry-run\n'
-            '  --sha HEX (=LINKBOOST_SHA256)  --referer URL (=LINKBOOST_REFERER)\n'
-            '  --cookie STR  (=LINKBOOST_COOKIE)  --header "Name: value" (repeatable, =\n'
-            '  LINKBOOST_HEADERS "a: 1; b: 2")  --limit MB/s (aggregate cap, =LINKBOOST_LIMIT)\n'
+            '  --sha HEX (=BANDWIDTHGOBLIN_SHA256)  --referer URL (=BANDWIDTHGOBLIN_REFERER)\n'
+            '  --cookie STR  (=BANDWIDTHGOBLIN_COOKIE)  --header "Name: value" (repeatable, =\n'
+            '  BANDWIDTHGOBLIN_HEADERS "a: 1; b: 2")  --limit MB/s (aggregate cap, =BANDWIDTHGOBLIN_LIMIT)\n'
             '  --links 0,1   pick which interfaces to combine: indices or IPs\n'
             '                 (e.g. --links 0,1 = WiFi + LAN, =MULTILINK_IFACES)\n'
             '  --open / --no-open   --history   --resume   --speedtest\n'
@@ -2314,12 +2330,12 @@ def _usage():
             '  --verify <manifest|dir>  check files against sha256sum checksums\n'
             '             (sha256sum-format file, or a dir with SHA256SUMS / *.sha256)\n'
             '  --selftest run the built-in offline QA (local ranged server, 2 links, sha)\n'
-            '  env also: MULTILINK_IFACES=0,1  MULTILINK_NODASH=1  LINKBOOST_SPEEDTEST_MB=8')
+            '  env also: MULTILINK_IFACES=0,1  MULTILINK_NODASH=1  BANDWIDTHGOBLIN_SPEEDTEST_MB=8')
 
 def _subrun(url, out, rest):
     """Download ONE queue entry in its own python process (used by --jobs > 1).
     Isolated process = zero shared-global risk between parallel runs; the child
-    inherits this environment (LINKBOOST_* vars, MULTILINK_IFACES, ...) and gets
+    inherits this environment (BANDWIDTHGOBLIN_* vars, MULTILINK_IFACES, ...) and gets
     plain logs (no dashboard) so parallel output stays readable. Exit code is
     meaningful: 0 = file saved, 1 = hard failure."""
     args = [sys.executable, os.path.abspath(__file__), url, out] + list(rest)
@@ -2488,10 +2504,10 @@ def _selftest():
         pass
     global local_ips, notify, OPEN_AFTER, QUIET, NO_LOG
     _saved = (local_ips, os.environ.get('MULTILINK_IFACES'),
-              os.environ.get('LINKBOOST_SHA256'), notify, OPEN_AFTER, QUIET, NO_LOG)
+              os.environ.get('BANDWIDTHGOBLIN_SHA256'), notify, OPEN_AFTER, QUIET, NO_LOG)
     local_ips = lambda: [('selftest-a', '127.0.0.2'), ('selftest-b', '127.0.0.3')]
     os.environ.pop('MULTILINK_IFACES', None)
-    os.environ['LINKBOOST_SHA256'] = dsha
+    os.environ['BANDWIDTHGOBLIN_SHA256'] = dsha
     notify = lambda *a, **kw: None
     OPEN_AFTER = False
     QUIET = True
@@ -2506,9 +2522,9 @@ def _selftest():
         else:
             os.environ.pop('MULTILINK_IFACES', None)
         if _saved[2] is not None:
-            os.environ['LINKBOOST_SHA256'] = _saved[2]
+            os.environ['BANDWIDTHGOBLIN_SHA256'] = _saved[2]
         else:
-            os.environ.pop('LINKBOOST_SHA256', None)
+            os.environ.pop('BANDWIDTHGOBLIN_SHA256', None)
         notify, OPEN_AFTER, QUIET, NO_LOG = _saved[3], _saved[4], _saved[5], _saved[6]
         srv.shutdown()
         srv.server_close()
@@ -2534,9 +2550,9 @@ def main():
     _utility = any(a in raw for a in ('--verify', '--selftest', '--history', '--dry-run',
                                       '--info', '--speedtest', '--version', '-V'))
     if '--quiet' not in raw and not QUIET and not _utility:
-        print(f'LinkBoost v{VERSION} build {BUILD}{_VER_LABEL} - one file, all your links.', flush=True)
+        print(f'👺 BandwidthGoblin v{VERSION} build {BUILD}{_VER_LABEL} - one file, all your links.', flush=True)
     if raw and raw[0] in ('--version', '-V', 'version'):
-        print(f'LinkBoost v{VERSION} build {BUILD}{_VER_LABEL}')
+        print(f'👺 BandwidthGoblin v{VERSION} build {BUILD}{_VER_LABEL}')
         return
     if raw and raw[0] in ('--report', '-r', 'report'):
         print_report(raw[1] if len(raw) > 1 else '')
@@ -2603,10 +2619,10 @@ def main():
             print(CNO('--speedtest needs a link to measure against.') + CDIM('\n' + _usage()))
             return
         import tempfile
-        os.environ['LINKBOOST_SPEEDTEST_MB'] = os.environ.get('LINKBOOST_SPEEDTEST_MB') or '8'
+        os.environ['BANDWIDTHGOBLIN_SPEEDTEST_MB'] = os.environ.get('BANDWIDTHGOBLIN_SPEEDTEST_MB') or '8'
         for t in targets:
             reset_state()
-            run_one(t, os.path.join(tempfile.gettempdir(), 'lb_speedtest.bin'), ['8', 'auto'] + eflags)
+            run_one(t, os.path.join(tempfile.gettempdir(), 'bg_speedtest.bin'), ['8', 'auto'] + eflags)
         return
     if fl.get('dry-run') or fl.get('info'):
         targets = [a for a in args if is_link(a)] or list(qurls or [])
@@ -2741,7 +2757,7 @@ def main():
             txt = traceback.format_exc()
             try:
                 if LOGFILE:
-                    with open(LOGFILE, 'a') as _f: _f.write(txt + '\n')
+                    with open(LOGFILE, 'a', errors='replace') as _f: _f.write(txt + '\n')
             except Exception:
                 pass
             print(CNO(f'Crashed: {ex}') + CDIM(f'\nFull details saved to: {LOGFILE}'), flush=True)
@@ -2773,11 +2789,11 @@ def run_one(url, out, rest):
     import queue as _q, shutil
     _flg, rest = _parse_flags(list(rest))
     EXTRA_HEADERS = {}
-    if _flg.get('referer') or os.environ.get('LINKBOOST_REFERER'):
-        EXTRA_HEADERS['Referer'] = (_flg.get('referer') or [os.environ['LINKBOOST_REFERER']])[0]
-    if _flg.get('cookie') or os.environ.get('LINKBOOST_COOKIE'):
-        EXTRA_HEADERS['Cookie'] = (_flg.get('cookie') or [os.environ['LINKBOOST_COOKIE']])[0]
-    for _hv in _flg.get('header', []) + (os.environ.get('LINKBOOST_HEADERS') or '').split(';'):
+    if _flg.get('referer') or os.environ.get('BANDWIDTHGOBLIN_REFERER'):
+        EXTRA_HEADERS['Referer'] = (_flg.get('referer') or [os.environ['BANDWIDTHGOBLIN_REFERER']])[0]
+    if _flg.get('cookie') or os.environ.get('BANDWIDTHGOBLIN_COOKIE'):
+        EXTRA_HEADERS['Cookie'] = (_flg.get('cookie') or [os.environ['BANDWIDTHGOBLIN_COOKIE']])[0]
+    for _hv in _flg.get('header', []) + (os.environ.get('BANDWIDTHGOBLIN_HEADERS') or '').split(';'):
         if ':' in _hv:
             _hk, _hvv = _hv.split(':', 1)
             _hk = _hk.strip()
@@ -2815,7 +2831,7 @@ def run_one(url, out, rest):
     # 0 threads/link means zero workers and a dead run - never allow it.
     TPL = max(1, min(TPL, 16))
     ORIG_URL = url
-    EXPECT_SHA = _sha_flag or (os.environ.get('LINKBOOST_SHA256') or '').strip().lower()
+    EXPECT_SHA = _sha_flag or (os.environ.get('BANDWIDTHGOBLIN_SHA256') or '').strip().lower()
     if os.path.isdir(out) or (not os.path.splitext(out)[1] and not os.path.exists(out)):
         os.makedirs(out, exist_ok=True)
         out = os.path.join(out, guess_name(ORIG_URL) or 'download.bin')
@@ -2833,7 +2849,7 @@ def run_one(url, out, rest):
     if NO_LOG:
         LOGFILE = None
     else:
-        open(LOGFILE, 'w').write(f'LinkBoost v{VERSION} build {BUILD}{_VER_LABEL} | start {time.ctime()} url={redact(url)}\n')
+        open(LOGFILE, 'w', errors='replace').write(f'BandwidthGoblin v{VERSION} build {BUILD}{_VER_LABEL} | start {time.ctime()} url={redact(url)}\n')
         log(f'log file: {LOGFILE}')
     if EXTRA_HEADERS:
         log('extra headers set: ' + ', '.join(sorted(EXTRA_HEADERS)))
@@ -2845,16 +2861,16 @@ def run_one(url, out, rest):
             log(f'sha256 verification enabled via sidecar (next to {os.path.basename(out)})')
     global SPEEDLIMIT, THR_CAP, THR_LAST, SPEEDTEST
     SPEEDLIMIT = 0.0; THR_CAP = 0.0; THR_LAST = 0.0; SPEEDTEST = 0.0
-    if _flg.get('limit') or os.environ.get('LINKBOOST_LIMIT'):
+    if _flg.get('limit') or os.environ.get('BANDWIDTHGOBLIN_LIMIT'):
         try:
-            SPEEDLIMIT = max(0.0, float((_flg.get('limit') or [os.environ['LINKBOOST_LIMIT']])[0]) * 1e6)
+            SPEEDLIMIT = max(0.0, float((_flg.get('limit') or [os.environ['BANDWIDTHGOBLIN_LIMIT']])[0]) * 1e6)
         except (ValueError, TypeError):
             log('ignoring bad --limit (need a number in MB/s, e.g. --limit=5)')
         else:
             log(f'speed limit: {SPEEDLIMIT/1e6:.1f} MB/s')
-    if os.environ.get('LINKBOOST_SPEEDTEST_MB'):
+    if os.environ.get('BANDWIDTHGOBLIN_SPEEDTEST_MB'):
         try:
-            SPEEDTEST = max(0.0, float(os.environ['LINKBOOST_SPEEDTEST_MB']) * 1e6)
+            SPEEDTEST = max(0.0, float(os.environ['BANDWIDTHGOBLIN_SPEEDTEST_MB']) * 1e6)
             log(f'speedtest: measuring up to {SPEEDTEST/1e6:.0f} MB via real chunks')
         except (ValueError, TypeError):
             pass
@@ -2873,12 +2889,12 @@ def run_one(url, out, rest):
         except Exception:
             pass
         if LOGFILE:
-            _FH = open(LOGFILE, 'a')
+            _FH = open(LOGFILE, 'a', errors='replace')
             faulthandler.enable(file=_FH)
     except Exception:
         pass
     ifaces = local_ips()
-    log(f'LinkBoost v{VERSION} build {BUILD}{_VER_LABEL}')
+    log(f'BandwidthGoblin v{VERSION} build {BUILD}{_VER_LABEL}')
     log('interfaces found:')
     for i, (name, ip) in enumerate(ifaces): log(f'  [{i}] {link_label(ip)}  ({name})')
     use = [ip for _, ip in ifaces]
@@ -3269,7 +3285,7 @@ def run_one(url, out, rest):
                 pass
             log('auto-restarting as single-stream to finish the file')
             return 'retry-single'
-        notify('LinkBoost: download failed' if failed is not None else 'LinkBoost: stopped',
+        notify('BandwidthGoblin: download failed' if failed is not None else 'BandwidthGoblin: stopped',
                f'{os.path.basename(out)} - resume saved ({len(done_list)}/{NCHUNKS} chunks)')
         return
     got = os.path.getsize(out)
@@ -3282,7 +3298,7 @@ def run_one(url, out, rest):
     log(f'intact check: {_why}')
     print((CYES('INTACT: ') if _ok else CNO('CORRUPT?: ')) + _why, flush=True)
     if not _ok:
-        notify('LinkBoost: verification FAILED', f'{os.path.basename(out)} - {_why}')
+        notify('BandwidthGoblin: verification FAILED', f'{os.path.basename(out)} - {_why}')
         try:
             if os.path.exists(manifest): os.remove(manifest)
             pf = out + '.progress'
@@ -3328,7 +3344,7 @@ def run_one(url, out, rest):
     _em, _es = divmod(_rem, 60)
     _ets = f'{_eh}h{_em:02d}m' if _eh else (f'{_em}m{_es:02d}s' if _em else f'{_es}s')
     _prune_logs(LOGDIR)
-    notify('LinkBoost: download complete', f'{os.path.basename(out)} ({got/1e6:.1f} MB) in {_ets}')
+    notify('BandwidthGoblin: download complete', f'{os.path.basename(out)} ({got/1e6:.1f} MB) in {_ets}')
     try:
         if OPEN_AFTER is not False and (OPEN_AFTER is True or _tty()):
             print('\a', end='', flush=True)

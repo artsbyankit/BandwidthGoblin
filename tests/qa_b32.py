@@ -11,10 +11,10 @@ ROOT = r'C:\Users\ankit\Documents\LinkBoost'
 QA = r'C:\Users\ankit\AppData\Local\Temp\opencode\lb_qa'
 URL = 'http://127.0.0.1:8765'
 PY = r'C:\Users\ankit\AppData\Local\Programs\Python\Python313\python.exe'
-LB = os.path.join(ROOT, 'linkboost.py')
+LB = os.path.join(ROOT, 'bandwidthgoblin.py')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 res = []
 def check(name, ok, extra=''):
@@ -25,8 +25,8 @@ FULL = open(os.path.join(QA, 'big.src'), 'rb').read()
 SHA_FULL = hashlib.sha256(FULL).hexdigest()
 lb.notify = lambda *a, **kw: None
 
-for _k in ('LINKBOOST_SHA256', 'LINKBOOST_LIMIT', 'LINKBOOST_SPEEDTEST_MB',
-           'LINKBOOST_REFERER', 'LINKBOOST_COOKIE', 'LINKBOOST_HEADERS',
+for _k in ('BANDWIDTHGOBLIN_SHA256', 'BANDWIDTHGOBLIN_LIMIT', 'BANDWIDTHGOBLIN_SPEEDTEST_MB',
+           'BANDWIDTHGOBLIN_REFERER', 'BANDWIDTHGOBLIN_COOKIE', 'BANDWIDTHGOBLIN_HEADERS',
            'MULTILINK_IFACES'):
     os.environ.pop(_k, None)
 

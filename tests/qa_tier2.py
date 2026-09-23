@@ -15,7 +15,7 @@ SERVED = os.path.join(QA, 'big.src')
 RESCLI = os.path.join(QA, 'rescli')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 lb.local_ips = lambda: [('qa-a', '127.0.0.2'), ('qa-b', '127.0.0.3')]
 lb.notify = lambda *a, **k: None   # the toast spawns a 7s-sleeping PowerShell; kill it for measurements
@@ -45,7 +45,7 @@ def cli(args, cwd=QA, env=None, timeout=300):
     e = dict(os.environ)
     if env:
         e.update(env)
-    p = subprocess.run([PY, os.path.join(ROOT, 'linkboost.py')] + args,
+    p = subprocess.run([PY, os.path.join(ROOT, 'bandwidthgoblin.py')] + args,
                        capture_output=True, text=True, cwd=cwd, env=e, timeout=timeout)
     return (p.stdout + p.stderr), p.returncode
 
@@ -58,6 +58,17 @@ def rm(*paths):
             os.remove(p)
         except OSError:
             pass
+
+def main_inproc(argv):
+    """Call lb.main() as the CLI would, but catch the sys.exit(0/1) that
+    one-shot runs raise (build 32 CLI exit codes) so this harness can keep
+    going and actually assert results."""
+    sys.argv = argv
+    try:
+        lb.main()
+        return 0
+    except SystemExit as e:
+        return 0 if e.code in (None, 0) else 1
 
 # === 1. flag parsing + help smoke ===========================================
 fl, rest = lb._parse_flags(['--limit=2', '--quiet', '--no-log', '--history', '--resume', '--speedtest'])
@@ -83,11 +94,10 @@ check('_toggle_pause flips flag', p1 is True and p2 is False and p3 is True)
 # discriminates a real mid-download halt from mere tune noise.
 outb = os.path.join(QA, 'base.bin')
 rm(outb, outb + '.resume', outb + '.progress', os.path.join(ROOT, 'logs', 'base.bin.log'))
-sys.argv = ['linkboost.py', f'{URL}/big.bin', outb, '--limit=0.5']
 t0 = time.time()
-lb.main()
+base_rc = main_inproc(['bandwidthgoblin.py', f'{URL}/big.bin', outb, '--limit=0.5'])
 base_el = time.time() - t0
-check('baseline: capped run intact', sha_of(outb) == SHA_FULL, f'({base_el:.1f}s)')
+check('baseline: capped run intact', base_rc == 0 and sha_of(outb) == SHA_FULL, f'({base_el:.1f}s)')
 
 out = os.path.join(QA, 'pause.bin')
 rm(out, out + '.resume', out + '.progress', os.path.join(ROOT, 'logs', 'pause.bin.log'))
@@ -97,13 +107,12 @@ def _pause_after_3s():
     time.sleep(2.0)
     lb.PAUSED = False
 th = threading.Thread(target=_pause_after_3s); th.start()
-sys.argv = ['linkboost.py', f'{URL}/big.bin', out, '--limit=0.5']
 t0 = time.time()
-lb.main()
+pause_rc = main_inproc(['bandwidthgoblin.py', f'{URL}/big.bin', out, '--limit=0.5'])
 el = time.time() - t0
 th.join(timeout=10)
 check('pause mid-run: +~2s vs baseline, stays intact',
-      sha_of(out) == SHA_FULL and el - base_el >= 1.5,
+      pause_rc == 0 and sha_of(out) == SHA_FULL and el - base_el >= 1.5,
       f'(base {base_el:.1f}s, paused {el:.1f}s)')
 
 # === 3. --history ===========================================================
@@ -148,7 +157,7 @@ check('--no-log: download still completes', sha_of(out) == SHA_FULL)
 # === 7. --speedtest =========================================================
 tmpout = os.path.join(tempfile.gettempdir(), 'lb_speedtest.bin')
 rm(tmpout, tmpout + '.resume', tmpout + '.progress')
-txt, rc = cli(['--speedtest', f'{URL}/big.bin'], env={'LINKBOOST_SPEEDTEST_MB': '2'})
+txt, rc = cli(['--speedtest', f'{URL}/big.bin'], env={'BANDWIDTHGOBLIN_SPEEDTEST_MB': '2'})
 check('--speedtest: reports done + combined rate', 'SPEEDTEST done' in txt and 'combined:' in txt and 'MB/s' in txt)
 check('--speedtest: temp output cleaned up', not os.path.exists(tmpout) and not os.path.exists(tmpout + '.resume'))
 
@@ -170,7 +179,7 @@ check('--resume: resume manifest removed after success', not os.path.exists(rout
 
 # === 9. regression: qa_drive scenarios ======================================
 for sc in ('multi', 'resume', 'norange'):
-    p = subprocess.run([PY, os.path.join(QA, 'qa_drive.py'), sc],
+    p = subprocess.run([PY, os.path.join(ROOT, 'tests', 'qa_drive.py'), sc],
                        capture_output=True, text=True, cwd=QA, timeout=300)
     ok = p.returncode == 0
     check(f'regression: qa_drive {sc}', ok, f'(rc={p.returncode})')

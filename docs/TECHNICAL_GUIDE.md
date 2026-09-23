@@ -1,13 +1,13 @@
-# LinkBoost — Technical Guide
+# BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **LinkBoost v2.0, build 38 (beta)** — the current
+> This document describes **BandwidthGoblin v2.0, build 39 (beta)** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
 
 ---
 
-## 1. What LinkBoost is
+## 1. What BandwidthGoblin is
 
 A **multi-connection downloader**: it downloads a single file over **every
 internet connection the machine has** (Ethernet, WiFi, USB-tethered phone,
@@ -16,10 +16,10 @@ hotspot) simultaneously, then verifies the finished file.
 Engineering constraints that shape every decision in the code:
 
 1. **100% Python standard library.** No `requirements.txt`, no pip installs,
-   no third-party packages. The whole tool is one file (`linkboost.py`,
+   no third-party packages. The whole tool is one file (`bandwidthgoblin.py`,
    ≈3.3k lines) that runs on any Python 3.8+.
 2. **No server component.** The file flows directly from the origin server to
-   the client. LinkBoost never sits between them and never sees your data.
+   the client. BandwidthGoblin never sits between them and never sees your data.
 3. **Extremely defensive.** A downloader that corrupts files is worse than a
    slow one. Corruption, stalls, hangs, and silent overwrites are treated as
    bugs.
@@ -28,7 +28,7 @@ Engineering constraints that shape every decision in the code:
 
 ### Versioning
 
-- `VERSION` / `BUILD` constants at the top of `linkboost.py` (e.g.
+- `VERSION` / `BUILD` constants at the top of `bandwidthgoblin.py` (e.g.
   `VERSION = '2.0'`, `BUILD = 38`).
 - `BETA = True` adds the `(beta)` label to the banner, `--version`,
   dashboard header, and seeded log lines.
@@ -104,7 +104,7 @@ synthesize "two links" offline — source-binding to them works on Windows.
 
 ### 3.3 Reachability probe — `_probe_links()`
 
-Before planning, LinkBoost opens a TCP connection to `host:port` **from each
+Before planning, BandwidthGoblin opens a TCP connection to `host:port` **from each
 candidate source IP**. Binds that fail instantly (e.g. unroutable source —
 Windows `WinError 10049`) are dropped with a warning. If fewer than two live
 links survive, the run falls back to a single stream with an explicit note.
@@ -141,7 +141,7 @@ links survive, the run falls back to a single stream with an explicit note.
 ### 4.2 The mid-file range probe
 
 A server may *claim* `Accept-Ranges` but send `200` full bodies anyway.
-LinkBoost probes with a **tiny range in the middle of the file**
+BandwidthGoblin probes with a **tiny range in the middle of the file**
 (`bytes=size//2-size//2`) — never starting at byte 0, because `0-` is what
 headers-only or sloppy servers special-case. To trust a link, the probe must
 return `206` **and** a `Content-Range` whose start byte matches the request.
@@ -287,14 +287,14 @@ console output can't take the whole tool down.
 
 ## 8. Persistence & data formats
 
-All runtime data lives **next to `linkboost.py`** (the script dir), not in the
+All runtime data lives **next to `bandwidthgoblin.py`** (the script dir), not in the
 user's download folder.
 
 ### 8.1 `logs/`
 
 - One numbered log per run (`<name>.log`, rotated, newest 20 kept).
 - Line 1 is the version seed:
-  `LinkBoost v2.0 build 38 (beta) | start ... url=<redacted>`.
+  `BandwidthGoblin v2.0 build 39 (beta) | start ... url=<redacted>`.
 - `--no-log` disables disk logging.
 
 ### 8.2 `perf.jsonl` (append-only JSON Lines)
@@ -360,7 +360,7 @@ business-as-usual only when `os.path.getsize(out) == size`.
    | `.mp4`, `.m4v`, `.mov` | `ftyp` at bytes 3–8 |
 
 4. **SHA-256 deep verify** when a hash is known: from `--sha`, the
-   `LINKBOOST_SHA256` env var, a sidecar `.sha256`, or `--selftest`. A
+   `BANDWIDTHGOBLIN_SHA256` env var, a sidecar `.sha256`, or `--selftest`. A
    mismatch reports `CORRUPT?` and the run is marked failed, not saved.
 
 `--verify <manifest|dir>` is a standalone tool: checks a `sha256sum`-format
@@ -374,19 +374,19 @@ sidecars. Exit code 1 on any failure.
 ### Direct
 
 ```
-linkboost.py                         interactive (paste a link after prompt)
-linkboost.py URL OUT [16 auto]       direct download
-linkboost.py URL --out-dir D:\dl     save straight into a folder
-linkboost.py --dry-run URL ...       probe links: size, type, ranges, learned speed
-linkboost.py --sha <sha256> URL OUT  deep-verify against a hash
-linkboost.py --queue list.txt [--out-dir D:\dl]
+bandwidthgoblin.py                         interactive (paste a link after prompt)
+bandwidthgoblin.py URL OUT [16 auto]       direct download
+bandwidthgoblin.py URL --out-dir D:\dl     save straight into a folder
+bandwidthgoblin.py --dry-run URL ...       probe links: size, type, ranges, learned speed
+bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash
+bandwidthgoblin.py --queue list.txt [--out-dir D:\dl]
                                      batch - one URL per line in the file
-linkboost.py --history               show the last 10 completed downloads
-linkboost.py --resume                continue the newest saved .resume download
-linkboost.py --speedtest URL         measure each link + combined speed (8 MB cap)
-linkboost.py --verify <manifest|dir> check files against sha256sum checksums
-linkboost.py --selftest              built-in offline QA
-linkboost.py --help / --version      help / version
+bandwidthgoblin.py --history               show the last 10 completed downloads
+bandwidthgoblin.py --resume                continue the newest saved .resume download
+bandwidthgoblin.py --speedtest URL         measure each link + combined speed (8 MB cap)
+bandwidthgoblin.py --verify <manifest|dir> check files against sha256sum checksums
+bandwidthgoblin.py --selftest              built-in offline QA
+bandwidthgoblin.py --help / --version      help / version
 ```
 
 ### Flags (any position)
@@ -396,16 +396,16 @@ linkboost.py --help / --version      help / version
 | `--queue FILE` | — | batch list (see §12) |
 | `--out-dir DIR` | — | output folder for queues / direct |
 | `--dry-run` / `--info` | — | probe links: reachability, size, ranges, speed memory |
-| `--sha HEX` | `LINKBOOST_SHA256` | expected sha256 for deep verify |
-| `--referer URL` | `LINKBOOST_REFERER` | Referer header (some CDNs require it) |
-| `--cookie STR` | `LINKBOOST_COOKIE` | Cookie header |
-| `--header "N: v"` | `LINKBOOST_HEADERS` | arbitrary extra headers (repeatable; env uses `;` = new header) |
-| `--limit MB/s` | `LINKBOOST_LIMIT` | aggregate speed cap across all links |
+| `--sha HEX` | `BANDWIDTHGOBLIN_SHA256` | expected sha256 for deep verify |
+| `--referer URL` | `BANDWIDTHGOBLIN_REFERER` | Referer header (some CDNs require it) |
+| `--cookie STR` | `BANDWIDTHGOBLIN_COOKIE` | Cookie header |
+| `--header "N: v"` | `BANDWIDTHGOBLIN_HEADERS` | arbitrary extra headers (repeatable; env uses `;` = new header) |
+| `--limit MB/s` | `BANDWIDTHGOBLIN_LIMIT` | aggregate speed cap across all links |
 | `--links 0,1` | `MULTILINK_IFACES` | pick interfaces by index or IP |
 | `--open` / `--no-open` | — | open the file after success |
 | `--history` | — | last 10 completed runs |
 | `--resume` | — | newest `.resume` manifest |
-| `--speedtest` | `LINKBOOST_SPEEDTEST_MB` | per-link + combined measurement |
+| `--speedtest` | `BANDWIDTHGOBLIN_SPEEDTEST_MB` | per-link + combined measurement |
 | `--report [host]` | — | per-host throughput summary |
 | `--eta host MB` | — | time estimate from learned speeds |
 | `--quiet` | — | milestones only, no dashboard |
@@ -436,7 +436,7 @@ chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
   `--out-dir` (absolute paths taken as-is).
 - Name collisions get `_2`, `_3` suffixes automatically.
 - `--jobs 1-8`: each entry becomes its own child process
-  (`python linkboost.py URL OUT 16 auto <eflags>`) with
+  (`python bandwidthgoblin.py URL OUT 16 auto <eflags>`) with
   `MULTILINK_NODASH=1` so parallel output stays readable. Environment
   (headers, cookie, ifaces, limits) is inherited, so per-queue tuning is one
   env export away.
@@ -467,7 +467,7 @@ Stdlib HTTP/1.1 server exposing precisely the failure modes that matter:
 | `/big.bin` | 4 MiB payload, single-range `206` + `Content-Range`, `ETag`, `If-Range` validation, `Accept-Ranges` |
 | `/tiny.txt` | 5-byte file (small-file chunk clamp) |
 | `/nohead.bin` | `HEAD → 405`, ranged `GET` works (CDNs that refuse HEAD) |
-| `/norange.bin` | **ignores Range**, always `200` full body (the trick LinkBoost must detect) |
+| `/norange.bin` | **ignores Range**, always `200` full body (the trick BandwidthGoblin must detect) |
 | `/echo-headers` | echoes `Referer`/`Cookie`/`X-Qa` headers back |
 
 `big.src` is a **deterministic** 4 MiB payload; its sha256 is checked by the
@@ -476,7 +476,7 @@ drivers, so any tool corruption is caught.
 ### 13.2 Drivers
 
 Run from the repo root with the server on `127.0.0.1:8765`; each expects
-`big.src` beside the driver and `linkboost.py` importable from the repo root.
+`big.src` beside the driver and `bandwidthgoblin.py` importable from the repo root.
 They simulate multiple real links by patching `lb.local_ips` to loopback
 sources (`127.0.0.2/3/4`) — source-binding to loopback works on Windows and
 exercises the *entire real code path* except the NIC itself.
@@ -510,17 +510,17 @@ aborted sockets on purpose, not a failure.
 
 `scripts/devbump.py "what changed"` is the *only* way builds ship:
 
-1. Reads `VERSION`/`BUILD` in the canonical `linkboost.py`, bumps BUILD by 1.
+1. Reads `VERSION`/`BUILD` in the canonical `bandwidthgoblin.py`, bumps BUILD by 1.
 2. Appends a `## v2.0 build N (dev)` CHANGELOG entry.
 3. `py_compile`s the canonical file.
 4. Syncs the **four byte-for-byte-identical copies**:
-   `linkboost.py`, `pack/windows/linkboost.py`, `pack/mac/linkboost.py`,
-   `pack/linux/linkboost.py`.
+   `bandwidthgoblin.py`, `pack/windows/bandwidthgoblin.py`, `pack/mac/bandwidthgoblin.py`,
+   `pack/linux/bandwidthgoblin.py`.
 5. Prints `all copies match: True` (sha256 comparison).
 
 **Invariant:** the four copies are SHA-identical at all times. If a
 post-bump edit is ever made to the canonical file by hand, the packs must be
-re-synced manually (`Copy-Item linkboost.py pack\*\linkboost.py`).
+re-synced manually (`Copy-Item bandwidthgoblin.py pack\*\bandwidthgoblin.py`).
 
 The platform folders are self-contained **packs** (each ships its own copy +
 launcher: `RUN.bat`/`run.command`/`run.sh` + a short README), so a user can
@@ -579,7 +579,7 @@ link's individual ceiling matched the combined throughput).
   validator-quirky host never turns into a churn loop.
 - **Some free CDNs block aggressive sources outright.** tele2 403-blocked this
   machine after sustained load; thinkbroadband.com 403s range probes from the
-  start. Nothing LinkBoost can do — the host-level block lives on the server.
+  start. Nothing BandwidthGoblin can do — the host-level block lives on the server.
 - **Chunk size & workers are coupled.** On real hosts, more workers than a
   server tolerates *reduce* throughput (46-stream run: 3.7 MB/s vs 5.3 MB/s at
   sane parallelism). Auto-tune caps each link at 1–4 workers for this reason.

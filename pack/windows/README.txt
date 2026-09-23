@@ -1,4 +1,4 @@
-LinkBoost - Windows
+BandwidthGoblin - Windows
 ====================
 
 WHAT IT DOES

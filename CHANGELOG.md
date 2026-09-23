@@ -1,4 +1,6 @@
-# LinkBoost Changelog - every change = new build number
+# BandwidthGoblin Changelog - every change = new build number
+
+> Renamed from **LinkBoost** in build 39. Older entries below are historical.
 
 ## v2.0 build 1 (2026-09-22) - first numbered build
 Everything proven so far in one package:
@@ -20,6 +22,15 @@ Everything proven so far in one package:
 
 Rules: bump BUILD by 1 for every change below, newest on top.
 Log line 1 of every download carries `v{VERSION} build {BUILD}`.
+
+## v2.0 build 41 (dev)
+- fix: encoding-safe console + log writes - 👺 banner silently shredded all output on ANSI code pages (cp1252): _safe_print redirected stdout to devnull after the first unencodable print; now streams reconfigure with errors='replace', crash hook + every LOGFILE open does too
+
+## v2.0 build 40 (dev)
+- branding: 👺 goblin logo (docs/logo.png, Apple-style PNG) added to README + PROMO headers; console banner/version prints lead with the goblin emoji
+
+## v2.0 build 39 (dev)
+- rename: project is now BandwidthGoblin (was LinkBoost) - module file bandwidthgoblin.py, banner/dashboard/log seeds/notify strings, env prefix BANDWIDTHGOBLIN_* (was LINKBOOST_*), usage text, launchers, pack READMEs, tests, docs; CHANGELOG history left intact
 
 ## v2.0 build 38 (dev)
 - fix: set global STOP on every run_one stop path (speedtest cap, ESC, no-range restart, hard failure) so idle workers exit the poll loop and ThreadPoolExecutor shutdown(wait=True) cannot hang the run after STOPPED/FAILED is printed

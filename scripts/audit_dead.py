@@ -1,4 +1,4 @@
-"""AST dead-code / unreferenced-symbol audit for linkboost.py (stdlib only)."""
+"""AST dead-code / unreferenced-symbol audit for bandwidthgoblin.py (stdlib only)."""
 import ast, sys, collections
 
 SRC = sys.argv[1]

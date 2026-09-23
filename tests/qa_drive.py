@@ -13,7 +13,7 @@ SERVED = os.path.join(QA, 'big.src')          # the deterministic 4 MiB payload
 URL = 'http://127.0.0.1:8765'
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 with open(SERVED, 'rb') as f:
     FULL = f.read()
@@ -26,9 +26,16 @@ lb.local_ips = lambda: [('qa-a', '127.0.0.2'), ('qa-b', '127.0.0.3')]
 
 scenario = sys.argv[1]
 
+def _main_inproc(argv):
+    sys.argv = argv
+    try:
+        lb.main()
+        return 0
+    except SystemExit as e:
+        return 0 if e.code in (None, 0) else 1
+
 def run(url, out, tune):
-    sys.argv = ['linkboost.py', url, out] + tune.split()
-    lb.main()
+    return _main_inproc(['bandwidthgoblin.py', url, out] + tune.split())
 
 if scenario == 'multi':
     out = os.path.join(QA, 'multi.bin')

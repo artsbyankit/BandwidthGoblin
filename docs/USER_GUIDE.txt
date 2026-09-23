@@ -1,10 +1,14 @@
-# LinkBoost Downloader v2.0 - Guide
+# BandwidthGoblin v2.0 - Guide
+
+Feed the goblin. Get your files faster.
 
 Downloads one file using all your internet connections at once
 (WiFi/LAN + phone hotspots) so it finishes faster. Free. No installs.
 
-Proven: 198 MB tool (SHA-verified), 4 GB YouTube 2160p, 8.5 GB Windows ISO
-(peak 27 MB/s), 1.7 GB movie pack (zip test clean).
+Proven: 140 MB kernel.org download combined over 3 real links (Ethernet +
+hotspot + USB tether) at ~5.3 MB/s with 100% combining efficiency, 1 GiB OVH
+resume byte-intact, sha256 matching the server's official hash, and a
+single-connection 140 MB run at 11.2 MB/s.
 
 ## How to use it (step by step)
 
@@ -47,10 +51,10 @@ Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.
   (Seedr free) do best with few workers - auto mode handles it.
 - Every download writes a white-text log into `logs/` next to the script,
   first line carries the build number. Learning data accumulates in
-  `perf.jsonl`: `py linkboost.py --report` shows per-connection history,
+  `perf.jsonl`: `py bandwidthgoblin.py --report` shows per-connection history,
   `--eta <host> <MB>` predicts the fastest plan.
 - Settings via environment variables:
-  - `LINKBOOST_SHA256=<hex>` - verify the finished file's SHA-256 (streamed,
+  - `BANDWIDTHGOBLIN_SHA256=<hex>` - verify the finished file's SHA-256 (streamed,
     no extra disk usage). Any mismatch aborts cleanly.
   - `MULTILINK_IFACES=0,2` - only use the listed interfaces (indices from logs).
   - `MULTILINK_NODASH=1` - plain text logs, no dashboard.
@@ -89,46 +93,46 @@ Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.
 
 ## Command-line flags (build 33+)
 
-Run `linkboost.py --help` for inline usage. Flags work at any position.
+Run `bandwidthgoblin.py --help` for inline usage. Flags work at any position.
 
-- `linkboost.py --queue list.txt --out-dir D:\dl`
+- `bandwidthgoblin.py --queue list.txt --out-dir D:\dl`
   Headless batch. One entry per line: `URL` or `URL output-name.ext`
   (`#` comments ok). No name = guessed from the URL (or `download_<n>.bin`
   for token URLs that carry no filename); duplicate names get `_2`/`_3`
   suffixes. `16 auto` tuning, no prompts. The run exits 0 when every file
   was saved, 1 if any failed.
-- `linkboost.py --jobs <1-8>` - download a `--queue` in parallel: up to N
+- `bandwidthgoblin.py --jobs <1-8>` - download a `--queue` in parallel: up to N
   entries at once, each in its own isolated process (no shared state, safe
   for chained scripts). Works with per-line output names.
-- `linkboost.py URL --out-dir D:\dl` - save a single link straight into a
+- `bandwidthgoblin.py URL --out-dir D:\dl` - save a single link straight into a
   folder (bypasses the save/tune prompts).
-- `linkboost.py --dry-run URL ...` - probe only: final URL, size, type,
-  range support (with a live 206 check), and speeds LinkBoost has learned
+- `bandwidthgoblin.py --dry-run URL ...` - probe only: final URL, size, type,
+  range support (with a live 206 check), and speeds BandwidthGoblin has learned
   for that host. Downloads nothing.
 - `--sha <64-hex>` - deep-verify the finished file against a SHA-256.
   Auto-detected from a `<filename>.sha256` file or `SHA256SUMS` sitting
-  next to the target, or `LINKBOOST_SHA256` env var.
+  next to the target, or `BANDWIDTHGOBLIN_SHA256` env var.
 - `--referer <url>` / `--cookie <str>` / `--header "Name: value"` (repeat)
   - extra request headers for CDNs that demand them. Env equivalents:
-  `LINKBOOST_REFERER`, `LINKBOOST_COOKIE`, `LINKBOOST_HEADERS="a: 1; b: 2"`.
+  `BANDWIDTHGOBLIN_REFERER`, `BANDWIDTHGOBLIN_COOKIE`, `BANDWIDTHGOBLIN_HEADERS="a: 1; b: 2"`.
 - `--open` / `--no-open` - force or suppress opening the folder when done
   (default: auto-open in a real console).
 - `--limit <MB/s>` - cap the *combined* speed of all streams at once
-  (all workers share one token budget). Env: `LINKBOOST_LIMIT`.
+  (all workers share one token budget). Env: `BANDWIDTHGOBLIN_LIMIT`.
 - `--links 0,1` (or `--links 192.168.1.20,172.20.10.2`) - pick exactly which
   interfaces to combine, by index or by IP. Equivalent env:
-  `MULTILINK_IFACES`. Before every multi-link run LinkBoost probes each
+  `MULTILINK_IFACES`. Before every multi-link run BandwidthGoblin probes each
   link's real reachability to the download host; dead links (expired
   hotspot, stale Wi-Fi) are dropped up front with a clear
   "only 1 working connection - single-stream" warning instead of being
   silently counted.
 - `--speedtest URL [URL ...]` - download real bytes and report each link's
   speed plus the combined rate, then clean up the temp file. Stops after
-  ~8 MB of measurement (tune with `LINKBOOST_SPEEDTEST_MB=2`).
+  ~8 MB of measurement (tune with `BANDWIDTHGOBLIN_SPEEDTEST_MB=2`).
 - `--history` - show the last 10 downloads (outcome, MB, average speed)
   recorded in `history.jsonl`.
 - `--resume` - continue the newest saved `.resume` automatically. When you
-  start interactive and a `.resume` exists, LinkBoost offers to resume it
+  start interactive and a `.resume` exists, BandwidthGoblin offers to resume it
   (press `r`).
 - `--quiet` - keep only milestone lines on screen (no per-chunk chatter,
   no launch banner). `--no-log` - skip the per-run disk log in `logs/`.
@@ -149,7 +153,7 @@ Run `linkboost.py --help` for inline usage. Flags work at any position.
 
 ## Files
 
-- `linkboost.py` (identical in root, windows/, mac/, linux/)
+- `bandwidthgoblin.py` (identical in root, windows/, mac/, linux/)
 - `RUN.bat` (+ per-OS `windows/RUN.bat`, `mac/run.command`, `linux/run.sh`)
 - `GUIDE.md` (this file, colorful), `GUIDE.txt` (plain), `CHANGELOG.md`
   (every change = new build number)

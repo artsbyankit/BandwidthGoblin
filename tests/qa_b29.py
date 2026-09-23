@@ -9,7 +9,7 @@ URL = 'http://127.0.0.1:8765'
 SERVED = os.path.join(QA, 'big.src')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 lb.local_ips = lambda: [('qa-a', '127.0.0.2'), ('qa-b', '127.0.0.3')]
 
 import urllib.request
@@ -40,6 +40,14 @@ for i in range(2):
     el = time.time() - t0
     check(f'notify() is pure spawn cost, no 7s sleep ({i})', el < 2.0, f'({el*1000:.0f}ms)')
 
+def _main_inproc(argv):
+    sys.argv = argv
+    try:
+        lb.main()
+        return 0
+    except SystemExit as e:
+        return 0 if e.code in (None, 0) else 1
+
 # 2. end-to-end capped run WITHOUT patching notify: build 28 patched baseline
 #    was 10.0s. With the REAL (now non-blocking) toast, wall time must stay at
 #    the cap-driven ~10s - NOT balloon past ~17s.
@@ -47,12 +55,11 @@ out = os.path.join(QA, 'b29.bin')
 for f in (out, out + '.resume', out + '.progress'):
     try: os.remove(f)
     except OSError: pass
-sys.argv = ['linkboost.py', f'{URL}/big.bin', out, '--limit=0.5']
 t0 = time.time()
-lb.main()
+rc = _main_inproc(['bandwidthgoblin.py', f'{URL}/big.bin', out, '--limit=0.5'])
 el = time.time() - t0
 sha = hashlib.sha256(open(out, 'rb').read()).hexdigest()
-check('download + real toast: no 7-9s hang', sha == SHA_FULL and el <= 13.0, f'({el:.1f}s, build28 baseline 10.0s)')
+check('download + real toast: no 7-9s hang', rc == 0 and sha == SHA_FULL and el <= 13.0, f'({el:.1f}s, build28 baseline 10.0s)')
 check('still cap-limited near ~0.5 MB/s', 8.0 <= el, f'({el:.1f}s)')
 
 print(f'\n{sum(res)}/{len(res)} checks passed')

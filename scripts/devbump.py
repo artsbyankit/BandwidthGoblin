@@ -1,4 +1,4 @@
-"""Dev helper: bump LinkBoost BUILD by 1, add a CHANGELOG entry,
+"""Dev helper: bump BandwidthGoblin BUILD by 1, add a CHANGELOG entry,
 recompile, and sync all 4 script copies. Stdlib only.
 
 Usage:
@@ -13,12 +13,12 @@ import hashlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)  # repo root - devbump.py lives in scripts/
-MAIN = os.path.join(ROOT, 'linkboost.py')
+MAIN = os.path.join(ROOT, 'bandwidthgoblin.py')
 COPIES = [os.path.join(ROOT, p) for p in (
-    'linkboost.py',
-    os.path.join('pack', 'windows', 'linkboost.py'),
-    os.path.join('pack', 'mac', 'linkboost.py'),
-    os.path.join('pack', 'linux', 'linkboost.py'),
+    'bandwidthgoblin.py',
+    os.path.join('pack', 'windows', 'bandwidthgoblin.py'),
+    os.path.join('pack', 'mac', 'bandwidthgoblin.py'),
+    os.path.join('pack', 'linux', 'bandwidthgoblin.py'),
 )]
 CHANGELOG = os.path.join(ROOT, 'CHANGELOG.md')
 
@@ -42,7 +42,7 @@ def main():
         src = f.read()
     m = re.search(r"^VERSION = '([^']+)'\nBUILD = (\d+)", src, re.M)
     if not m:
-        print('VERSION/BUILD not found in linkboost.py')
+        print('VERSION/BUILD not found in bandwidthgoblin.py')
         return 1
     ver, build = m.group(1), int(m.group(2)) + 1
     src = src[:m.start()] + f"VERSION = '{ver}'\nBUILD = {build}" + src[m.end():]

@@ -8,7 +8,7 @@ URL = 'http://127.0.0.1:8765'
 SERVED = os.path.join(QA, 'big.src')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 res = []
 def check(name, ok, extra=''):
@@ -30,8 +30,8 @@ while time.time() < deadline:
 else:
     print('[server] NOT REACHABLE'); sys.exit(1)
 
-for _k in ('LINKBOOST_SHA256', 'LINKBOOST_LIMIT', 'LINKBOOST_SPEEDTEST_MB',
-           'LINKBOOST_REFERER', 'LINKBOOST_COOKIE', 'LINKBOOST_HEADERS'):
+for _k in ('BANDWIDTHGOBLIN_SHA256', 'BANDWIDTHGOBLIN_LIMIT', 'BANDWIDTHGOBLIN_SPEEDTEST_MB',
+           'BANDWIDTHGOBLIN_REFERER', 'BANDWIDTHGOBLIN_COOKIE', 'BANDWIDTHGOBLIN_HEADERS'):
     os.environ.pop(_k, None)
 
 def run(rest, out):

@@ -14,10 +14,10 @@ ROOT = r'C:\Users\ankit\Documents\LinkBoost'
 QA = r'C:\Users\ankit\AppData\Local\Temp\opencode\lb_qa'
 URL = 'http://127.0.0.1:8765'
 PY = r'C:\Users\ankit\AppData\Local\Programs\Python\Python313\python.exe'
-LB = os.path.join(ROOT, 'linkboost.py')
+LB = os.path.join(ROOT, 'bandwidthgoblin.py')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 res = []
 def check(name, ok, extra=''):

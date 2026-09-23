@@ -15,7 +15,7 @@ QA = r'C:\Users\ankit\AppData\Local\Temp\opencode\lb_qa'
 URL = 'http://127.0.0.1:8765'
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 res = []
 def check(name, ok, extra=''):
@@ -36,8 +36,8 @@ while time.time() < deadline:
 else:
     print('[server] NOT REACHABLE'); sys.exit(1)
 
-for _k in ('LINKBOOST_SHA256', 'LINKBOOST_LIMIT', 'LINKBOOST_SPEEDTEST_MB',
-           'LINKBOOST_REFERER', 'LINKBOOST_COOKIE', 'LINKBOOST_HEADERS'):
+for _k in ('BANDWIDTHGOBLIN_SHA256', 'BANDWIDTHGOBLIN_LIMIT', 'BANDWIDTHGOBLIN_SPEEDTEST_MB',
+           'BANDWIDTHGOBLIN_REFERER', 'BANDWIDTHGOBLIN_COOKIE', 'BANDWIDTHGOBLIN_HEADERS'):
     os.environ.pop(_k, None)
 
 def run(rest, outname, speedtest_mb=None):
@@ -46,9 +46,9 @@ def run(rest, outname, speedtest_mb=None):
         try: os.remove(f)
         except OSError: pass
     if speedtest_mb:
-        os.environ['LINKBOOST_SPEEDTEST_MB'] = str(speedtest_mb)
+        os.environ['BANDWIDTHGOBLIN_SPEEDTEST_MB'] = str(speedtest_mb)
     else:
-        os.environ.pop('LINKBOOST_SPEEDTEST_MB', None)
+        os.environ.pop('BANDWIDTHGOBLIN_SPEEDTEST_MB', None)
     lb.reset_state()
     lb.local_ips = lambda: [('qa-a', '127.0.0.2'), ('qa-b', '127.0.0.3')]
     buf = io.StringIO()

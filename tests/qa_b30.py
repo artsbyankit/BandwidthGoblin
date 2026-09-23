@@ -8,7 +8,7 @@ URL = 'http://127.0.0.1:8765'
 SERVED = os.path.join(QA, 'big.src')
 
 sys.path.insert(0, ROOT)
-import linkboost as lb
+import bandwidthgoblin as lb
 
 res = []
 def check(name, ok, extra=''):
@@ -50,11 +50,11 @@ for f in os.listdir(od) if os.path.isdir(od) else []:
     except OSError: pass
 os.makedirs(od, exist_ok=True)
 
-for _k in ('LINKBOOST_SHA256', 'LINKBOOST_LIMIT', 'LINKBOOST_SPEEDTEST_MB',
-           'LINKBOOST_REFERER', 'LINKBOOST_COOKIE', 'LINKBOOST_HEADERS'):
+for _k in ('BANDWIDTHGOBLIN_SHA256', 'BANDWIDTHGOBLIN_LIMIT', 'BANDWIDTHGOBLIN_SPEEDTEST_MB',
+           'BANDWIDTHGOBLIN_REFERER', 'BANDWIDTHGOBLIN_COOKIE', 'BANDWIDTHGOBLIN_HEADERS'):
     os.environ.pop(_k, None)
 
-sys.argv = ['linkboost.py', '--out-dir', od, f'{URL}/big.bin?t=1', f'{URL}/big.bin?t=2']
+sys.argv = ['bandwidthgoblin.py', '--out-dir', od, f'{URL}/big.bin?t=1', f'{URL}/big.bin?t=2']
 lb.main()
 
 p1 = os.path.join(od, 'big.bin')
@@ -71,7 +71,7 @@ for f in os.listdir(od2) if os.path.isdir(od2) else []:
     try: os.remove(os.path.join(od2, f))
     except OSError: pass
 os.makedirs(od2, exist_ok=True)
-sys.argv = ['linkboost.py', '--out-dir', od2, f'{URL}/big.bin']
+sys.argv = ['bandwidthgoblin.py', '--out-dir', od2, f'{URL}/big.bin']
 lb.main()
 ok3 = os.path.exists(os.path.join(od2, 'big.bin')) \
     and hashlib.sha256(open(os.path.join(od2, 'big.bin'), 'rb').read()).hexdigest() == SHA_FULL

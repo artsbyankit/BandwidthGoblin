@@ -1,4 +1,4 @@
-LinkBoost - macOS
+BandwidthGoblin - macOS
 =================
 
 WHAT IT DOES
