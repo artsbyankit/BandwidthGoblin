@@ -549,8 +549,8 @@ grab one folder and go — no repo required.
 
 ## 16. Known limitations & roadmap (honest)
 
-**Field validation (builds 35–38)** — real-world results from this machine's
-three live connections (Ethernet LAN, USB-tethered phone, iPhone hotspot):
+**Field validation (builds 35–38, 41–42)** — real-world results from this machine's
+live connections (Ethernet LAN, USB-tethered phone, iPhone hotspot, Wi-Fi):
 
 | Test | Target | Config | Result |
 |---|---|---|---|
@@ -560,6 +560,9 @@ three live connections (Ethernet LAN, USB-tethered phone, iPhone hotspot):
 | Max-parallel stress | `proof.ovh.net` 1 GiB | `256 16` (48 streams) | 429 storm + timeouts; watchdog force-stopped at 8.4 MB with resume saved — proving the stall path never hangs |
 | Resume | OVH 1 GiB | resumed `256 2` | completed 1073.7 MB in 670.6 s, **INTACT** |
 | Single link | kernel.org 140.1 MB | 1 connection (USB-tethered phone, after LAN removal) | 20.6 s ≈ **7.43 MB/s**, sha256 identical; speedtest 8.1 MB in 2.6 s ≈ 3.07 MB/s |
+| Speedtest granularity | kernel.org 140.1 MB | build 41: 2 links, 8 chunks | the 8 MB window was satisfied entirely by one fast link (0.77 MB/s "combined") — coarse 17.5 MB chunks hid the other links; **fixed in build 42** with 256 fine chunks |
+| 2 links (build 41) | kernel.org 140.1 MB | Wi-Fi (192.168.1.196) + iPhone tether, auto | **21.2 s ≈ 6.6 MB/s**, sha256 verified; Wi-Fi delivered 59.6 MB @ 2.65 MB/s — it had probed out as unreachable 90 s earlier, then recovered (flaky router) |
+| 3 links (build 41) | kernel.org 140.1 MB | Wi-Fi + iPhone + Ethernet3 (10.106.77.62), auto, 16 chunks | all 3 joined; 38.3 s ≈ **3.7 MB/s**, sha256 verified; the 10.106.x link is a slow tail-dragger (0.13 MB/s), auto-tune keeps it to 1 worker |
 
 Combining efficiency was ≈100% on the 3-link `16 auto` run (the sum of each
 link's individual ceiling matched the combined throughput).
@@ -583,6 +586,15 @@ link's individual ceiling matched the combined throughput).
 - **Chunk size & workers are coupled.** On real hosts, more workers than a
   server tolerates *reduce* throughput (46-stream run: 3.7 MB/s vs 5.3 MB/s at
   sane parallelism). Auto-tune caps each link at 1–4 workers for this reason.
+- **A weak link drags the tail.** The 10.106.x LAN link tops out near 0.1
+  MB/s; while stealing recovers almost everything, the job still runs at the
+  slowest link's pace for its chunks. `--links` can exclude a link you know
+  is barely alive (`--links=192.168.1.196,172.20.10.2` skips the slow one).
+- **Sockets do lie about "up".** Wi-Fi showed a clean `Up` + valid DHCP while
+  its own gateway dropped 50% of pings and every outbound test timed out —
+  only the app's real probe (bind + connect + 206 request to the actual URL)
+  caught it. It also *recovered* mid-session with no interface change, so the
+  probe-and-drop logic must not permanently blacklist a link.
 - **`--speedtest` never truly finished on the first try** (builds ≤ 36 raced
   past the byte cap and re-queued the same chunk forever). Fixed in build 37 by
   letting `_SpeedtestDone` propagate cleanly. Build 38 additionally fixed a

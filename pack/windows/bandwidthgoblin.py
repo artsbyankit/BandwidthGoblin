@@ -45,7 +45,7 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 41
+BUILD = 42
 BETA = True  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
@@ -2620,9 +2620,14 @@ def main():
             return
         import tempfile
         os.environ['BANDWIDTHGOBLIN_SPEEDTEST_MB'] = os.environ.get('BANDWIDTHGOBLIN_SPEEDTEST_MB') or '8'
+        # Build 42: speedtest needs FINE chunks so every live link contributes
+        # to the measurement. With '8' chunks a 140 MB file makes 17.5 MB
+        # pieces: the first fast link's chunk satisfies the 8 MB cap before
+        # the other links land a byte, so "combined" used to only ever show
+        # one link. 256 chunks ~ 0.5 MB pieces - all links get sampled.
         for t in targets:
             reset_state()
-            run_one(t, os.path.join(tempfile.gettempdir(), 'bg_speedtest.bin'), ['8', 'auto'] + eflags)
+            run_one(t, os.path.join(tempfile.gettempdir(), 'bg_speedtest.bin'), ['256', 'auto'] + eflags)
         return
     if fl.get('dry-run') or fl.get('info'):
         targets = [a for a in args if is_link(a)] or list(qurls or [])

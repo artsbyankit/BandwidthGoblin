@@ -23,6 +23,9 @@ Everything proven so far in one package:
 Rules: bump BUILD by 1 for every change below, newest on top.
 Log line 1 of every download carries `v{VERSION} build {BUILD}`.
 
+## v2.0 build 42 (dev)
+- speedtest: slice into 256 fine chunks (~0.5MB each) so every live link contributes to the 8MB measurement window - 8 coarse 17.5MB chunks let one fast link satisfy the cap before the others land a byte, reporting a bogus single-link 'combined'; also updated §16 field table with build 41 2-link/3-link online results and the Wi-Fi-up-but-dead findings
+
 ## v2.0 build 41 (dev)
 - fix: encoding-safe console + log writes - 👺 banner silently shredded all output on ANSI code pages (cp1252): _safe_print redirected stdout to devnull after the first unencodable print; now streams reconfigure with errors='replace', crash hook + every LOGFILE open does too
 
