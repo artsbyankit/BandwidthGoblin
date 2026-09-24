@@ -2,8 +2,6 @@
 
 <div align="center">
 
-<img src="logo.png" alt="BandwidthGoblin 👺" width="96"/>
-
 Feeds on every internet connection your machine has. Zero cloud, zero
 accounts, pure feral speed.
 

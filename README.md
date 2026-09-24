@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/logo.png" alt="BandwidthGoblin 👺" width="110"/>
-
 # 👺 BandwidthGoblin
 
 > **Feed the goblin. Get your files faster.**
@@ -101,6 +99,9 @@ networking is a mess. Your feedback is what turns beta into 1.0.
   just won't magically break physics.
 - **Signed URL Expiry:** if a link has a temporary token that expires
   mid-download, feed the goblin a fresh URL.
+- **Loopback/link-local are ignored** by default (not separate physical
+  routes); set `BANDWIDTHGOBLIN_KEEP_LOOPBACK=1` to include them for
+  LAN-loopback testing.
 - Requires **Python 3.8+** (Windows users: install from python.org - skip the
   Microsoft Store dummy app).
 

@@ -45,9 +45,16 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 42
+BUILD = 43
 BETA = True  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
+
+# Build 43: merged line (old LinkBoost build 22 -> BandwidthGoblin build 42).
+# The new implementation is a strict superset of the old one, so nothing was
+# merged back except one opt-out-friendly switch: loopback (127.0.0.x) and
+# link-local (169.254.x) addresses stay dropped by default - they are not
+# separate physical routes - but BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 keeps them
+# for LAN-loopback testing. Branding is BandwidthGoblin everywhere.
 
 SOCK_TIMEOUT = 20   # real socket timeout (sec); enforced via sock.settimeout
 STALL_SECS = 25     # abort a chunk Range if zero bytes arrive for this long
@@ -140,10 +147,14 @@ def local_ips():
                 ips = _parse_ifconfig(out)
     except Exception:
         pass
-    # dedupe, drop loopback/link-local/APIPA
+    # Dedupe. Loopback (127.0.0.x) and link-local/APIPA (169.254.x) are not
+    # separate physical routes, so they are dropped by default - a loopback
+    # cannot add bandwidth. Set BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 to include
+    # them anyway, e.g. for multi-link tests against a 127.0.0.x server.
+    _keep_lb = (os.environ.get('BANDWIDTHGOBLIN_KEEP_LOOPBACK') or '').strip().lower() in ('1', 'true', 'yes', 'on')
     seen, res = set(), []
     for name, ip in ips:
-        if ip not in seen and not ip.startswith(('127.', '169.254.')):
+        if ip not in seen and (_keep_lb or not ip.startswith(('127.', '169.254.'))):
             seen.add(ip); res.append((name, ip))
     return res
 
@@ -2330,7 +2341,9 @@ def _usage():
             '  --verify <manifest|dir>  check files against sha256sum checksums\n'
             '             (sha256sum-format file, or a dir with SHA256SUMS / *.sha256)\n'
             '  --selftest run the built-in offline QA (local ranged server, 2 links, sha)\n'
-            '  env also: MULTILINK_IFACES=0,1  MULTILINK_NODASH=1  BANDWIDTHGOBLIN_SPEEDTEST_MB=8')
+            '  env also: MULTILINK_IFACES=0,1  MULTILINK_NODASH=1  BANDWIDTHGOBLIN_SPEEDTEST_MB=8\n'
+            '  BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 keeps loopback/link-local interfaces (usually\n'
+            '          dropped - they are not separate physical routes; use for LAN tests only)')
 
 def _subrun(url, out, rest):
     """Download ONE queue entry in its own python process (used by --jobs > 1).

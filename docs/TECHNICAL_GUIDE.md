@@ -87,7 +87,10 @@ Engineering constraints that shape every decision in the code:
 - Windows: parse `ipconfig` per-adapter IPv4 addresses.
 - macOS/Linux: parse `ifconfig` (fallback `ip -4 addr`).
 - Loopback (`127.0.0.x`) and link-local (`169.254.x`) addresses are **dropped**
-  — a loopback does not consume a different physical route.
+  by default — a loopback does not consume a different physical route, and
+  link-local/APIPA has no working gateway. Set
+  `BANDWIDTHGOBLIN_KEEP_LOOPBACK=1` to keep them anyway (useful for QA-style
+  multi-link tests against a server on `127.0.0.x`).
 - Order is deterministic per adapter; `MULTILINK_IFACES` can select a subset
   by **index** (`0,1`) or **literal IP** (`192.168.1.133,172.20.10.6`).
 

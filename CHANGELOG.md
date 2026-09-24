@@ -23,6 +23,11 @@ Everything proven so far in one package:
 Rules: bump BUILD by 1 for every change below, newest on top.
 Log line 1 of every download carries `v{VERSION} build {BUILD}`.
 
+## v2.0 build 43 (dev)
+- merged line: the new build 42 implementation is kept as-is (it already includes every feature from the old LinkBoost build 22), branded BandwidthGoblin everywhere
+- loopback (127.0.0.x) and link-local (169.254.x) addresses remain dropped by default - not separate physical routes - with an opt-in BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 for LAN-loopback testing
+- landing-page fix: README + PROMO no longer embed docs/logo.png (it did not render on GitHub); the 👺 emoji is the logo now, and the PNG file is removed from the repo
+
 ## v2.0 build 42 (dev)
 - speedtest: slice into 256 fine chunks (~0.5MB each) so every live link contributes to the 8MB measurement window - 8 coarse 17.5MB chunks let one fast link satisfy the cap before the others land a byte, reporting a bogus single-link 'combined'; also updated §16 field table with build 41 2-link/3-link online results and the Wi-Fi-up-but-dead findings
 
