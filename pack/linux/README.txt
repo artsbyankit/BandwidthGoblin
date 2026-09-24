@@ -22,4 +22,4 @@ RUN IT
 TIPS
   - Strict sites (Seedr): answer tune with: 16 1
   - Notifications use notify-send.
-  - Full manual: see ../../docs/USER_GUIDE.txt
+  - Full manual: see ../../docs/USER_GUIDE.md

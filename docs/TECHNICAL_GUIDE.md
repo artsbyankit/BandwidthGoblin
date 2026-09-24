@@ -87,10 +87,11 @@ Engineering constraints that shape every decision in the code:
 ### Versioning
 
 - `VERSION` / `BUILD` constants at the top of `bandwidthgoblin.py` (e.g.
-  `VERSION = '2.0'`, `BUILD = 38`).
+  `VERSION = '2.0'`, `BUILD = 43`).
 - `BETA = True` adds the `(beta)` label to the banner, `--version`,
   dashboard header, and seeded log lines.
-- The build number is bumped **only** by `scripts/devbump.py` (see §16).
+- The build number is bumped by 1 for every change; release tags are named
+  `v2.0-buildN` (see §14).
 
 ---
 
@@ -513,74 +514,35 @@ chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
 
 ---
 
-## 13. Testing & QA (`tests/`)
+## 13. Testing & QA
 
-### 13.1 The QA server (`tests/qa_server.py`)
+Every release is put through a built-in offline self-check before shipping:
+`bandwidthgoblin.py --selftest` exercises the real ranged multi-link code
+path — a file is split into chunks, downloaded over synthesized loopback
+links, recombined, verified byte-for-byte (sha256) — and must exit 0. Any
+user can run the same check with one command.
 
-```
-python tests/qa_server.py 8765 tests/big.src
-```
-
-Stdlib HTTP/1.1 server exposing precisely the failure modes that matter:
-
-| Endpoint | Behavior |
-|---|---|
-| `/big.bin` | 4 MiB payload, single-range `206` + `Content-Range`, `ETag`, `If-Range` validation, `Accept-Ranges` |
-| `/tiny.txt` | 5-byte file (small-file chunk clamp) |
-| `/nohead.bin` | `HEAD → 405`, ranged `GET` works (CDNs that refuse HEAD) |
-| `/norange.bin` | **ignores Range**, always `200` full body (the trick BandwidthGoblin must detect) |
-| `/echo-headers` | echoes `Referer`/`Cookie`/`X-Qa` headers back |
-
-`big.src` is a **deterministic** 4 MiB payload; its sha256 is checked by the
-drivers, so any tool corruption is caught.
-
-### 13.2 Drivers
-
-Run from the repo root with the server on `127.0.0.1:8765`; each expects
-`big.src` beside the driver and `bandwidthgoblin.py` importable from the repo root.
-They simulate multiple real links by patching `lb.local_ips` to loopback
-sources (`127.0.0.2/3/4`) — source-binding to loopback works on Windows and
-exercises the *entire real code path* except the NIC itself.
-
-| Driver | Covers |
-|---|---|
-| `qa_b29.py` | baseline ranged multi-link download, ETag paths |
-| `qa_b30.py` | resume + list-of-downloads behaviors of that build |
-| `qa_b31.py` | per-link totals, one-link runs, IP-index selection |
-| `qa_b32.py` | queue/batch, dry-run/probe, unroutable-source probe, ghost run |
-| `qa_b33.py` | `--selftest`, `--verify` manifest/dir/sidecars, corrupt/missing files |
-| `qa_b37.py` | build 37/38 regression: `--speedtest` cap-stop must not churn (`failed ()`), must end < 20 s, must leave no `.resume`, and must not hang in-process — plus a plain-download control |
-| `qa_drive.py` | scenarios: `multi` / `resume` / `norange` |
-| `qa_tier2.py` | combined suite: pause simulation, `--limit`, `--history`, `--resume`, `--speedtest`, `--quiet`, `--no-log`, re-runs the three qa_drive scenarios |
-
-Expected: **all `PASS`, exit 0**. The server's stderr fills with
-`ConnectionReset`/`ConnectionAborted` noise — that is the tool closing
-aborted sockets on purpose, not a failure.
-
-### 13.3 Static checks
-
-- `scripts/audit_dead.py` — custom AST checker for unreferenced
-  defs/globals (the audit that found build 34's dead code).
-- `pyflakes` (run from a temporary install, not the user env) — 0 findings on
-  build 34/35; the only remaining "warnings" are intentional framework hooks
-  (`connect`, `do_HEAD`/`do_GET`, `log_message`, `protocol_version`).
+The heavier offline regression harness (a local ranged QA server plus
+per-build driver scripts) lives outside the public repo, so this repository
+stays lean and user-focused. The checks and the code under test are the same;
+only the shipping location differs.
 
 ---
 
 ## 14. Build & release process
 
-`scripts/devbump.py "what changed"` is the *only* way builds ship:
+A release ships in five simple steps:
 
-1. Reads `VERSION`/`BUILD` in the canonical `bandwidthgoblin.py`, bumps BUILD by 1.
-2. Appends a `## v2.0 build N (dev)` CHANGELOG entry.
-3. `py_compile`s the canonical file.
-4. Syncs the **four byte-for-byte-identical copies**:
-   `bandwidthgoblin.py`, `pack/windows/bandwidthgoblin.py`, `pack/mac/bandwidthgoblin.py`,
-   `pack/linux/bandwidthgoblin.py`.
-5. Prints `all copies match: True` (sha256 comparison).
+1. Bump `BUILD` by 1 in the canonical `bandwidthgoblin.py` (right after `VERSION`).
+2. Add a `## v2.0 build N` section to `CHANGELOG.md`.
+3. `py_compile` the canonical file.
+4. Sync the **four byte-for-byte-identical copies**:
+   `bandwidthgoblin.py`, `pack/windows/bandwidthgoblin.py`,
+   `pack/mac/bandwidthgoblin.py`, `pack/linux/bandwidthgoblin.py`.
+5. Tag the commit `v2.0-buildN` and publish a GitHub release from it.
 
 **Invariant:** the four copies are SHA-identical at all times. If a
-post-bump edit is ever made to the canonical file by hand, the packs must be
+post-sync edit is ever made to the canonical file by hand, the packs must be
 re-synced manually (`Copy-Item bandwidthgoblin.py pack\*\bandwidthgoblin.py`).
 
 The platform folders are self-contained **packs** (each ships its own copy +

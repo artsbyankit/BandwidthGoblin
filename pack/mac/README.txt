@@ -21,4 +21,4 @@ RUN IT
 TIPS
   - Strict sites (Seedr): answer tune with: 16 1
   - Notifications use macOS Notification Center.
-  - Full manual: see ../../docs/USER_GUIDE.txt
+  - Full manual: see ../../docs/USER_GUIDE.md

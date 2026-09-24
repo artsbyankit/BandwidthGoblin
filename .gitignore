@@ -17,14 +17,6 @@ pack/*/.lastdir
 pack/*/__pycache__/
 pack/*/*.pyc
 
-# QA test outputs (tests/)
-tests/*.bin
-tests/*.resume
-tests/*.progress
-tests/out*/
-tests/*_out/
-tests/verify_tmp/
-
 # OS junk
 .DS_Store
 Thumbs.db

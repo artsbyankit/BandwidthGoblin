@@ -17,4 +17,4 @@ TIPS
   - Strict sites (Seedr): answer tune with: 16 1
   - Pin browser to LAN (admin PowerShell once):
       Set-NetIPInterface -InterfaceAlias "Ethernet" -InterfaceMetric 5
-  - Full manual: see ..\..\docs\USER_GUIDE.txt
+  - Full manual: see ..\..\docs\USER_GUIDE.md

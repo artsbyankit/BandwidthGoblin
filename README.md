@@ -24,7 +24,6 @@ Linux.
 
 - **[Friendly guide](docs/USER_GUIDE.md)** - how to use it, plain language
 - **[Technical guide](docs/TECHNICAL_GUIDE.md)** - how it works under the hood
-- **[Marketing copy](docs/PROMO.md)** - ready-to-use description text
 
 ---
 
@@ -115,27 +114,15 @@ BandwidthGoblin/
 ├── LICENSE                 # non-commercial, open-source-only license
 ├── docs/
 │   ├── USER_GUIDE.md       # friendly manual (plain language)
-│   ├── USER_GUIDE.txt      # same manual, plain text
-│   ├── TECHNICAL_GUIDE.md  # deep dive for engineers and curious friends
-│   └── PROMO.md            # ready-to-use marketing copy
-├── scripts/
-│   ├── devbump.py          # release helper: bump build, sync packs, changelog
-│   └── audit_dead.py       # AST dead-code checker used in CI-style audits
-├── pack/
-│   ├── windows/            # ready-to-use Windows pack (bandwidthgoblin.py + RUN.bat)
-│   ├── mac/                # ready-to-use macOS pack (bandwidthgoblin.py + run.command)
-│   └── linux/              # ready-to-use Linux pack (bandwidthgoblin.py + run.sh)
-└── tests/
-    ├── qa_server.py        # local ranged HTTP server for offline QA
-    ├── qa_b29.py ...       # regression drivers, one per build milestone
-    ├── qa_drive.py         # scenario driver (multi / resume / norange)
-    ├── qa_tier2.py         # combined end-to-end suite
-    └── big.src             # deterministic 4 MiB test payload
+│   └── TECHNICAL_GUIDE.md  # deep dive for engineers and curious friends
+└── pack/
+    ├── windows/            # ready-to-use Windows pack (bandwidthgoblin.py + RUN.bat)
+    ├── mac/                # ready-to-use macOS pack (bandwidthgoblin.py + run.command)
+    └── linux/              # ready-to-use Linux pack (bandwidthgoblin.py + run.sh)
 ```
 
 The four `bandwidthgoblin.py` copies (root + packs) are kept **byte-for-byte
-identical** by `scripts/devbump.py` - the packs are just the tool ready to run
-on each OS.
+identical** - the packs are just the tool ready to run on each OS.
 
 ## License
 
