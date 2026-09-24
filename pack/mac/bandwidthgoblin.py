@@ -45,10 +45,25 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 44
+BUILD = 45
 BETA = False  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
+# Build 45: YouTube downloads now get the full BandwidthGoblin treatment -
+# the raw DASH streams are pulled straight through the multi-link engine
+# (split over every connection, resumable, verified) and merged locally with
+# ffmpeg, so YouTube uses all your networks like any other link. Same
+# usability passes as build 44: paste a link, pick a quality, done. This
+# build also adds self-explanatory UI: a one-time "how to drive this" intro
+# at the first prompt, visible [P]/[R]/[ESC]/[H] key hints in the download
+# dashboard (H = in-run help overlay), a 'help' command at any prompt, and
+# engine/feature info lines when a YouTube download starts.
+# Bug fixes: --limit / --links / --cookie / --referer / --sha now apply to
+# YouTube split downloads too; leftover temp stream files are cleaned up on
+# failure or stop; YouTube filenames sanitize Windows-forbidden trailing
+# dots/spaces and reserved names (CON, NUL, ...); non-single requested
+# download shapes fall back to yt-dlp safely.
+#
 # Build 44: first stable release. Adds YouTube downloads - paste any
 # youtube.com / youtu.be link and BandwidthGoblin fetches the proven
 # yt-dlp engine (one time, ~30-40 MB, cached in tools/) and downloads the
@@ -118,6 +133,12 @@ def _toggle_pause():
         log('PAUSED - press P/R to resume, ESC to stop')
     else:
         log('RESUMED - downloads continuing')
+
+def _toggle_help():
+    """[H] key: show the in-dashboard feature help overlay for a few seconds."""
+    global HELP_SHOW, HELP_UNTIL
+    HELP_SHOW = not HELP_SHOW
+    HELP_UNTIL = time.time() + 6
 
 def _parse_ifconfig(out):
     ips, current = [], None
@@ -574,6 +595,9 @@ EXPECT_SHA = ''                                # optional sha256 from BANDWIDTHG
 OPEN_AFTER = None                              # None=open folder only in tty; True=always; False=never
 EXTRA_HEADERS = {}                             # extra request headers (referer/cookie/custom)
 PAUSED = False                                 # soft pause (P key): keep sockets, stall workers/steals
+HELP_SHOW = False                              # [H] key toggles the in-dashboard help overlay
+HELP_UNTIL = 0.0                               # help overlay auto-hides after this timestamp
+_INTRO_SHOWN = False                           # one-time "how to drive this" intro at the first prompt
 QUIET = False                                  # --quiet: stdout chatter suppressed, milestones kept
 NO_LOG = False                                 # --no-log: skip per-run disk logs
 SPEEDLIMIT = 0.0                               # --limit: aggregate bytes/sec cap (0 = off)
@@ -795,6 +819,8 @@ def _esc_listener():
                             return
                         if c in (b'p', b'P', b'r', b'R') and not RUN_DONE.is_set():
                             _toggle_pause()
+                        if c in (b'h', b'H'):
+                            _toggle_help()
                 except Exception:
                     return
         else:
@@ -815,6 +841,8 @@ def _esc_listener():
                             return
                         if c.lower() in ('p', 'r') and not RUN_DONE.is_set():
                             _toggle_pause()
+                        if c.lower() == 'h':
+                            _toggle_help()
             finally:
                 try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception: pass
@@ -1277,6 +1305,7 @@ def _cell(s, width):
     return s + ' ' * (width - len(vis))
 
 def dash(out, use, nchunks):
+    global HELP_SHOW
     if os.name == 'nt':
         try: os.system('')
         except Exception: pass
@@ -1404,9 +1433,16 @@ def dash(out, use, nchunks):
                 _avgc = C['grn'] if _avg >= 1e6 else (C['ylw'] if _avg >= 3e5 else C['red'])
                 L.append(row(f"speed {C['dim']}{_spark}{C['rst']}  avg {_avgc}{C['bld']}{_avg/1e6:5.2f}{C['rst']} MB/s"))
             L.append(bot)
+            if HELP_SHOW and time.time() < HELP_UNTIL:
+                for _hl in ('[P]/[R]  pause + resume             [ESC]  stop safely (progress is saved)',
+                            '[H]  hide this help - paste ANY link: games, ISOs, and YouTube (1080/720/audio are quality picks)',
+                            'queues: --queue list.txt   speed cap: --limit 5   interfaces: --links 0,1   more: --help'):
+                    L.append(C['dim'] + ' ' + _hl + C['rst'])
+            elif HELP_SHOW:
+                HELP_SHOW = False
             for l in list(RING)[-4:]:
                 L.append(C['dim'] + ' ' + l[-70:] + C['rst'])
-            L.append(C['dim'] + ' [ESC] stop   ' + os.path.basename(out) + '.log' + C['rst'])
+            L.append(C['dim'] + ' [P] pause  [R] resume  [ESC] stop safely  [H] help    ' + os.path.basename(out) + '.log' + C['rst'])
             try:
                 import shutil as _sh
                 try:
@@ -1940,7 +1976,28 @@ def save_lastdir(d):
     except Exception:
         pass
 
+def _mini_help():
+    print(CYLW('\nwhat BandwidthGoblin can do (no guide needed):'), flush=True)
+    print('  paste a link            - downloads over EVERY connection you have at once')
+    print('  YouTube link            - auto-downloads (Enter = best, or type 1080/720/480/audio)')
+    print('  [P] / [R]               - pause / resume a download in progress')
+    print('  [H]                     - help overlay right in the dashboard')
+    print('  [ESC]                   - stop safely (progress is saved - rerun to continue)')
+    print('  --yt URL 1080           - one-line YouTube download')
+    print('  --queue list.txt        - batch many links, one per line')
+    print('  --limit 5               - cap the combined speed at 5 MB/s')
+    print('  --links 0,1             - pick which connections to combine')
+    print('  --dry-run URL           - inspect a link without downloading it')
+    print('  --selftest              - quick self-check that everything works')
+    print('  --help                  - the full option list\n', flush=True)
+
 def acquire_urls():
+    global _INTRO_SHOWN
+    if not _INTRO_SHOWN:
+        _INTRO_SHOWN = True
+        print('  ' + CDIM('paste any link (or YouTube link) - it downloads over every connection you have.'))
+        print('  ' + CDIM('during download: [P] pause  [R] resume  [H] help  [ESC] stop safely'))
+        print('  ' + CDIM("type 'help' here anytime for the feature list."))
     while True:
         clip = get_clipboard()
         cl = extract_links(clip)
@@ -1948,10 +2005,16 @@ def acquire_urls():
             first = cl[0] if len(cl[0]) <= 80 else cl[0][:80] + '...'
             extra = f' (+{len(cl)-1} more)' if len(cl) > 1 else ''
             v = ask(f'clipboard link:\n  {first}{extra}\n[Enter] use / [p] paste different / [q] quit: ')
+            if v.strip().lower() in ('help', 'h', 'menu'):
+                _mini_help()
+                continue
             if v.lower() == 'q':
                 return None
             if v.lower() in ('p', 'paste', 'n', 'no'):
                 v2 = ask('paste link(s) (or q to quit): ')
+                if (v2 or '').strip().lower() in ('help', 'h', 'menu'):
+                    _mini_help()
+                    continue
                 if (v2 or '').lower() == 'q' or not v2:
                     return None
                 links = extract_links(v2)
@@ -1969,6 +2032,9 @@ def acquire_urls():
             if clip:
                 print(CYLW('clipboard has no link in it.'))
             v = ask('paste download link(s) (or q to quit): ')
+            if (v or '').strip().lower() in ('help', 'h', 'menu'):
+                _mini_help()
+                continue
             if (v or '').lower() == 'q' or not v:
                 return None
             links = extract_links(v)
@@ -2333,7 +2399,10 @@ def _usage():
             '  bandwidthgoblin.py --dry-run URL ...       probe links: size, type, ranges, learned speed\n'
             '  bandwidthgoblin.py --yt URL [best|2160|1440|1080|720|480|audio]\n'
             '                                      YouTube: paste a youtube.com / youtu.be link\n'
-            '                                      (interactive mode also auto-detects YouTube links)\n'
+            '                                      (interactive mode also auto-detects YouTube links;\n'
+            '                                      streams split over ALL your connections + merged)\n'
+            '  feedback / keys: type "help" at any prompt for the feature list; during a download\n'
+            '                                      P pause | R resume | H help | ESC stop safely\n'
             '  bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash\n'
             '  bandwidthgoblin.py --history               show the last 10 completed downloads\n'
             '  bandwidthgoblin.py --resume                continue the newest saved .resume download\n'
@@ -2358,11 +2427,16 @@ def _usage():
             '          dropped - they are not separate physical routes; use for LAN tests only)')
 
 # ---------------------------------------------------------------------------
-# YouTube mode (build 44): paste any youtube.com / youtu.be link. BandwidthGoblin
-# fetches the proven yt-dlp engine once (cached in tools/ next to this file),
-# then downloads the video at best quality - or a user-picked height/audio.
-# ffmpeg (if present on PATH or as tools/ffmpeg) enables full-quality
-# video+audio merging; without it the best single-file format is used.
+# YouTube mode (build 44, split in build 45): paste any youtube.com / youtu.be
+# link. BandwidthGoblin fetches the proven yt-dlp engine once (cached in
+# tools/ next to this file), then downloads the video at best quality - or a
+# user-picked height/audio. ffmpeg (if present on PATH or as tools/ffmpeg)
+# enables full-quality video+audio merging; without it the best single-file
+# format is used. Build 45: with ffmpeg available, the raw DASH streams are
+# downloaded through BandwidthGoblin's own multi-link engine (split over every
+# connection, resumable, verified) and merged locally - YouTube gets the same
+# all-networks treatment as any other link. Streams run sequentially
+# in-process to avoid global-state races; failures fall back to plain yt-dlp.
 # ---------------------------------------------------------------------------
 
 _YT_HOSTS = ('youtube.com', 'youtu.be')
@@ -2571,8 +2645,159 @@ def _yt_ffmpeg():
         print(CDIM(f'(ffmpeg unavailable: {ex})'))
         return None
 
-def _yt_run(url, headless, fl, quality=None):
-    """Download a single YouTube link. Returns True on success."""
+def _yt_json(exe, fmt, url, deno):
+    """Ask yt-dlp for the concrete media streams (simulate mode) so the
+    multi-link engine can grab them directly. Returns (info_dict, None) or
+    (None, reason)."""
+    cmd = [exe, '--no-playlist', '-f', fmt, '-J', '--no-check-formats', url]
+    if deno:
+        cmd += ['--js-runtimes', f'deno:{deno}']
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding='utf-8', errors='replace', timeout=180)
+    except Exception as ex:
+        return None, str(ex)
+    if p.returncode != 0:
+        return None, (p.stderr or p.stdout)[-240:]
+    try:
+        return json.loads(p.stdout), None
+    except Exception:
+        return None, 'yt-dlp JSON parse failed'
+
+def _yt_split_download(info, od, ff, eflags):
+    """Download the requested YouTube streams through BandwidthGoblin's own
+    multi-link engine - chunk-split over every connection, resumable - then
+    merge video + audio locally with ffmpeg. Returns (True, final_path) on
+    success, or (None, reason) so the caller can fall back to plain yt-dlp."""
+    try:
+        rds = info.get('requested_downloads') or [{}]
+        rd = rds[0] if len(rds) == 1 else {}
+        streams = rd.get('requested_formats') or []
+    except Exception:
+        return None, 'no requested formats'
+    if not streams:
+        return None, 'no requested formats'
+    good = []
+    for s in streams:
+        u = s.get('url') or ''
+        proto = s.get('protocol') or ''
+        if not (u.startswith('http://') or u.startswith('https://')):
+            return None, f'non-HTTP stream ({proto})'
+        if '.m3u8' in u.lower() or proto.startswith('m3u8'):
+            return None, 'HLS stream (not range-splittable)'
+        if not is_link(u):
+            return None, 'stream URL not download-able'
+        good.append((s.get('format_id') or '?', s.get('ext') or 'bin', u))
+    title = str(info.get('title') or info.get('id') or 'video').strip()
+    vid = str(info.get('id') or 'yt')
+    safe = re.sub(r'[<>:"/\\|?*]', '_', title).strip().rstrip('. ')
+    if not safe:
+        safe = 'video'
+    if safe.upper() in ('CON', 'PRN', 'AUX', 'NUL') or re.match(r'(COM|LPT)[1-9]$', safe, re.I):
+        safe = '_' + safe
+    ext = str(rd.get('ext') or '')
+    if ext not in ('mp4', 'mkv', 'webm'):
+        ext = 'mkv' if len(good) == 2 else 'mp4'
+    final = os.path.join(od, f'{safe} [{vid}].{ext}')
+    if os.path.isfile(final) and os.path.getsize(final) > 1000:
+        print(CDIM(f'  {os.path.basename(final)} is already there - skipping.'))
+        return True, final
+    tmp = [os.path.join(od, f'.{vid}_s{i}.tmp') for i in range(len(good))]
+    n = '1 stream' if len(good) == 1 else f'{len(good)} streams (video + audio)'
+    print(f'👺 multi-link engine: splitting {n} over every connection you have...', flush=True)
+
+    def _clean_tmp():
+        for t in tmp:
+            try:
+                if os.path.exists(t):
+                    os.remove(t)
+                if os.path.exists(t + '.resume'):
+                    os.remove(t + '.resume')
+            except Exception:
+                pass
+
+    try:
+        for i, (fid, fext, u) in enumerate(good):
+            if STOP:
+                _clean_tmp()
+                return None, 'stopped'
+            print(CYLW(f'  stream {fid} ({fext}): all links, 16 chunks...'), flush=True)
+            reset_state()
+            res = run_one(u, tmp[i], ['16', 'auto'] + eflags)
+            if res == 'retry-single':
+                log('single-stream retry after multi-link failure (youtube stream)')
+                reset_state()
+                res = run_one(u, tmp[i], ['1', '1'] + eflags)
+            if res == 'error' or res is None:
+                _clean_tmp()
+                return None, f'stream {fid} download failed'
+            if not os.path.isfile(tmp[i]) or os.path.getsize(tmp[i]) < 100:
+                _clean_tmp()
+                return None, f'stream {fid} produced no file'
+        if STOP:
+            _clean_tmp()
+            return None, 'stopped'
+        if len(good) == 1:
+            os.replace(tmp[0], final)
+            try:
+                print(CYES(f'DONE: {os.path.basename(final)} ({os.path.getsize(final) / 1048576:.1f} MB)'), flush=True)
+            except Exception:
+                pass
+            return True, final
+        # two streams: merge with the bundled ffmpeg (copy, no re-encode)
+        m = subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final],
+                           capture_output=True)
+        if m.returncode != 0:
+            final2 = os.path.join(od, f'{safe} [{vid}].mkv')
+            m2 = subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final2],
+                                capture_output=True)
+            if m2.returncode != 0:
+                _clean_tmp()
+                return None, 'ffmpeg merge failed'
+            final = final2
+        _clean_tmp()
+        try:
+            print(CYES(f'DONE: {os.path.basename(final)} ({os.path.getsize(final) / 1048576:.1f} MB), merged from {len(good)} streams'), flush=True)
+        except Exception:
+            pass
+        return True, final
+    except Exception as ex:
+        _clean_tmp()
+        return None, str(ex) or 'split failed'
+
+def _yt_direct(exe, fmt, url, od, deno, ff, is_audio):
+    """Plain yt-dlp download (used for audio-only and as the fallback when the
+    multi-link split is not possible). Returns True on success."""
+    outtmpl = os.path.join(od, '%(title)s [%(id)s].%(ext)s')
+    cmd = [exe, '-f', fmt, '--no-playlist', '--newline', '-o', outtmpl, url]
+    if deno:
+        cmd += ['--js-runtimes', f'deno:{deno}']
+    if ff:
+        cmd += ['--ffmpeg-location', ff]
+    if is_audio:
+        if ff:
+            cmd += ['-x', '--audio-format', 'mp3']
+        else:
+            print(CYLW('no ffmpeg - keeping the best audio stream as-is instead of converting to mp3.'))
+    kind = 'audio' if is_audio else 'download'
+    try:
+        p = subprocess.run(cmd)
+        if p.returncode != 0:
+            print(CNO(f'YouTube {kind} failed.') + CDIM(
+                '\nIf the error mentions "Sign in to confirm you are not a bot", the video is '
+                'region/age-locked - try a different video, or watch it once in a browser first.'))
+        return p.returncode == 0
+    except Exception as ex:
+        print(CNO(f'YouTube {kind} failed: {ex}'))
+        return False
+
+def _yt_run(url, headless, fl, quality=None, eflags=None):
+    """Download a single YouTube link. Returns True on success. Build 45: when
+    ffmpeg is available the raw streams are pulled through BandwidthGoblin's
+    own multi-link engine (split over every connection, resumable, verified)
+    and merged locally - YouTube gets the same all-networks treatment as any
+    other link."""
+    eflags = eflags or []
     if not is_youtube(url):
         return False
     exe = _yt_engine()
@@ -2598,29 +2823,33 @@ def _yt_run(url, headless, fl, quality=None):
                    'On Windows the tool fetches ffmpeg automatically on the next run; on macOS/Linux\n'
                    'install it once with:  brew install ffmpeg   (or apt install ffmpeg)'))
         fmt = 'b'
-    outtmpl = os.path.join(od, '%(title)s [%(id)s].%(ext)s')
-    cmd = [exe, '-f', fmt, '--no-playlist', '--newline', '-o', outtmpl, url]
     deno = _deno_engine()
-    if deno:
-        cmd += ['--js-runtimes', f'deno:{deno}']
-    if ff:
-        cmd += ['--ffmpeg-location', ff]
-    if is_audio:
-        if ff:
-            cmd += ['-x', '--audio-format', 'mp3']
-        else:
-            print(CYLW('no ffmpeg - keeping the best audio stream as-is instead of converting to mp3.'))
     print(f'👺 YouTube download - {qlabel}' + CDIM(f'  |  {redact(url)}') + f'\n   saving to: {od}', flush=True)
-    try:
-        p = subprocess.run(cmd)
-        if p.returncode != 0:
-            print(CNO('YouTube download failed.') + CDIM(
-                '\nIf the error mentions "Sign in to confirm you are not a bot", the video is '
-                'region/age-locked - try a different video, or watch it once in a browser first.'))
-        return p.returncode == 0
-    except Exception as ex:
-        print(CNO(f'YouTube download failed: {ex}'))
-        return False
+    if is_audio:
+        print(CDIM('   engines: yt-dlp + deno + ffmpeg (audio only - converted to mp3)'), flush=True)
+    elif ff:
+        print(CDIM('   engines: yt-dlp + deno + ffmpeg - streams split over all your connections,'), flush=True)
+        print(CDIM('   [P] pause  [R] resume  [ESC] stop safely  all work during the multi-link download'), flush=True)
+    else:
+        print(CDIM('   engines: yt-dlp + deno (no ffmpeg - best single-file format, often ~720p)'), flush=True)
+    if is_audio:
+        return _yt_direct(exe, fmt, url, od, deno, ff, True)
+    if ff:
+        # Preferred: split the raw streams over every connection, then merge.
+        info, jerr = _yt_json(exe, fmt, url, deno)
+        if info:
+            ok, got = _yt_split_download(info, od, ff, eflags)
+            if ok:
+                return True
+            if got == 'stopped':
+                print(CDIM('  stopped - your progress is preserved.'))
+                return False
+            print(CDIM(f'  multi-link split not possible ({got}) - using the yt-dlp engine...'))
+        else:
+            print(CDIM(f'  multi-link split not possible ({jerr}) - using the yt-dlp engine...'))
+    else:
+        print(CYLW('no ffmpeg - taking the best single-file format (often capped at ~720p).'))
+    return _yt_direct(exe, fmt, url, od, deno, ff, False)
 
 def _subrun(url, out, rest):
     """Download ONE queue entry in its own python process (used by --jobs > 1).
@@ -2876,7 +3105,7 @@ def main():
             print(CNO('--yt needs a YouTube URL, e.g.  bandwidthgoblin.py --yt https://youtu.be/XXXX 1080')
                   + CDIM('\n' + _usage()))
             sys.exit(1)
-        sys.exit(0 if _yt_run(u, True, fl, qq or None) else 1)
+        sys.exit(0 if _yt_run(u, True, fl, qq or None, eflags) else 1)
     que = (fl.get('queue') or [''])[0]
     qitems = _read_queue(que) if que else []
     qurls = [u for u, _o in qitems]
@@ -2949,7 +3178,7 @@ def main():
                 save_lastdir(args[1])
             except Exception:
                 pass
-        sys.exit(0 if _yt_run(args[0], True, fl, qq or None) else 1)
+        sys.exit(0 if _yt_run(args[0], True, fl, qq or None, eflags) else 1)
     if len(args) >= 2 and is_link(args[0]) and not is_link(args[1]):
         # One-shot form: URL then output FILE. If the second token is itself a
         # link (e.g. two --out-dir URLs), that is a batch, not an output name.
@@ -3004,7 +3233,7 @@ def main():
                 return
             url, pending = urls[0], urls[1:] + pending
         if is_youtube(url):
-            ok = _yt_run(url, headless, fl)
+            ok = _yt_run(url, headless, fl, None, eflags)
             if headless:
                 if not ok:
                     _hfails += 1
@@ -3018,6 +3247,9 @@ def main():
             if not tty:
                 return
             nxt = ask('another? [paste link / y / N]: ')
+            if nxt.strip().lower() in ('help', 'h', 'menu'):
+                _mini_help()
+                continue
             if is_link(nxt):
                 pending = [nxt]
                 continue

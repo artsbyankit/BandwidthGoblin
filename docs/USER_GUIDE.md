@@ -43,6 +43,10 @@ home router) still works safely — it just won't double your speed.
 7. Press **ESC** anytime to stop — **your progress is saved**. Run the same
    link again later and it continues where it left off.
 
+**The keys you can press mid-download:** `P` = pause, `R` = resume,
+`ESC` = stop safely (progress kept), `H` = help overlay with the feature
+list — always visible at the bottom of the dashboard, no guide needed.
+
 When it finishes you'll see `DONE`, the file size, and the time it took. The
 finished file is **checked automatically** (size + file type + SHA-256 when
 available) so you know it's not corrupt.
@@ -68,6 +72,11 @@ YouTube links work right out of the box — no separate program, no account.
 5. Watch the progress. The file is saved with the video's **title** as the
    name.
 
+**YouTube gets the full multi-link treatment:** the video's video + audio
+streams are downloaded with **every connection you have at once** (like any
+other link) and merged back into one file. The `P` / `R` / `ESC` keys work
+during a YouTube download too.
+
 **First-time note:** the very first YouTube download quietly downloads the
 yt-dlp engine plus two helpers (a JS runtime and ffmpeg) — about 130–190 MB,
 one time, saved in a `tools/` folder next to the script. Your computer will
@@ -76,7 +85,9 @@ are offline and instant to start.
 
 **Honest note:** YouTube downloads use the famous open-source **yt-dlp**
 engine (with **deno** and **FFmpeg** for the newest YouTube formats and
-1080p+ quality) — big respect and thanks to those projects. If a rare video
+1080p+ quality) — big respect and thanks to those projects. yt-dlp finds the
+video's streams; BandwidthGoblin pulls them down over all your connections;
+FFmpeg merges them back together. If a rare video
 says *"Sign in to confirm you are not a bot"*, it's region/age-locked: watch
 it once in a browser first, or pick another video.
 
@@ -126,7 +137,9 @@ Open a terminal in the folder and run:
 | `py bandwidthgoblin.py --limit 5` | Cap the combined speed at 5 MB/s |
 | `py bandwidthgoblin.py URL --out-dir D:\dl` | Download one link straight into a folder, no questions |
 
-During a download: press **P** to pause, **R** to resume, **ESC** to stop.
+During a download: press **P** to pause, **R** to resume, **ESC** to stop,
+**H** for the in-dashboard help overlay. Typing **help** at any prompt prints
+the feature list — you never need to have read this guide to drive it.
 
 ---
 

@@ -61,7 +61,9 @@ python3 bandwidthgoblin.py
 ```
 
 Then: **copy a download link**, paste it in, pick where to save, and watch it
-fly. Press `ESC` anytime to stop safely.
+fly. During a download: `[P]` pause, `[R]` resume, `[ESC]` stop safely, `[H]`
+in-dashboard help. Type **help** at any prompt for the feature list - no guide
+needed.
 
 ### YouTube videos
 
@@ -82,6 +84,11 @@ bandwidthgoblin.py
 (2160p/1440p/1080p when available). `1080`, `720`, `480` cap it to that
 height. `audio` saves just the soundtrack (MP3 when possible).
 
+YouTube downloads use the **same all-networks engine as any other link**:
+the video and audio streams are split over every connection you have, pulled
+in parallel, then merged into one file with ffmpeg. `[P]` / `[R]` / `[ESC]`
+work during YouTube downloads too.
+
 > The very first YouTube download quietly fetches the yt-dlp engine plus a JS
 > runtime and ffmpeg (~130-190 MB, one time, cached in a `tools/` folder next
 > to the script). After that, YouTube downloads are fully offline. You need an
@@ -97,7 +104,8 @@ BandwidthGoblin downloads them for you automatically).
 - 🎬 **Fat ISOs & Movies** - high-throughput direct downloads without
   throttled single-stream limits.
 - 🎥 **YouTube Videos** - paste any YouTube link, download it at best quality
-  or a resolution you pick (1080p, 720p, ...) - even audio-only.
+  or a resolution you pick (1080p, 720p, ...) - even audio-only - split over
+  **every connection you have**, exactly like a normal link.
 - 📱 **Desperate Hotspotting** - combine sketchy hotel Wi-Fi with cellular
   data when neither works alone.
 - 📦 **Batch Slurping** - feed it up to 8 links at once and let it hoard data
@@ -111,7 +119,12 @@ BandwidthGoblin downloads them for you automatically).
 - **Works while you browse** - your normal internet keeps working
 - **YouTube built in** - paste a youtube.com / youtu.be link, it grabs the
   video at the best quality it offers - or your pick (2160 / 1440 / 1080 /
-  720 / 480 / audio-only)
+  720 / 480 / audio-only) - split over **all your connections** like any
+  other link
+- **Self-explanatory** - a one-time "how to drive this" intro at the first
+  prompt, the download dashboard always shows its keys
+  (`[P] pause  [R] resume  [ESC] stop  [H] help`), and typing **help** at any
+  prompt prints the feature list
 - **Straight to you** - the file goes from the website to your computer,
   never through a third-party server
 - **Honest about limits** - if two connections share the same pipe, it still
@@ -119,8 +132,8 @@ BandwidthGoblin downloads them for you automatically).
 
 ## The honest fine print
 
-**BandwidthGoblin v2.0 build 44 is the first stable release.** It works - the
-beta label is off.
+**BandwidthGoblin v2.0 build 45 is the current stable release.** It works -
+the beta label is off.
 
 - **Where the speed comes from:** two *actually different* networks (e.g.
   Fiber Wi-Fi + Mobile 5G) will unleash maximum speed. If both interfaces
@@ -165,8 +178,9 @@ downloads them for you (once) and gives full credit:
 - **[yt-dlp](https://github.com/yt-dlp/yt-dlp)** - the famous, battle-tested
   YouTube downloader engine (The Unlicense / public domain). 190k+ ⭐ on
   GitHub, updates every couple of weeks to keep up with YouTube. BandwidthGoblin
-  is a friendly face on top of it: you paste a link, yt-dlp does the heavy
-  lifting.
+  is a friendly face on top of it: yt-dlp figures out which streams a video
+  has, BandwidthGoblin pulls them down over all your connections at once, and
+  FFmpeg merges them back together.
 - **[deno](https://github.com/denoland/deno)** - the JS runtime YouTube
   extraction needs (MIT license).
 - **[FFmpeg](https://ffmpeg.org/)** - merges high-quality video + audio

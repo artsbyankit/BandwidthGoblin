@@ -1,7 +1,7 @@
 # BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **BandwidthGoblin v2.0, build 44 (first stable release)** — the current
+> This document describes **BandwidthGoblin v2.0, build 45** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
 
@@ -492,8 +492,13 @@ Auto-detects: full unicode (with per-link meters) on modern terminals /
 Windows Terminal / `TERM_PROGRAM`; a compact single line on legacy Windows
 consoles; **off** when output is piped, `--quiet`, `--jobs`, or
 `MULTILINK_NODASH=1`. Per-link row: name, IP, %-of-traffic, live MB/s,
-chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
-(currently only interactive — headless automation simulates `lb.PAUSED`).
+chunk/activity state. Keys (interactive only — headless automation simulates
+`lb.PAUSED`): `P`/`R` pause + resume, `ESC` stops safely, `H` toggles a
+6-second help overlay drawn *inside* the dashboard frame (rendered by the
+same 0.2 s loop, so it cannot be clobbered by repaints). The bottom line
+always shows the key hints; a one-time "how to drive this" intro appears at
+the first interactive prompt, and typing `help` / `menu` at any prompt calls
+`_mini_help()`. You never need the guide to drive it.
 
 ---
 
@@ -501,10 +506,10 @@ chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
 
 Since build 44 (first stable release), any link whose host is
 `youtube.com` / `youtu.be` (including `m.`, `music.`, `shorts` variants) is
-routed through **yt-dlp** instead of BandwidthGoblin's HTTP engine — YouTube
-protocols (DASH, SABR, m3u8, signatures) are far outside the project's scope
-to re-implement from scratch, so the tool delegates to the battle-tested
-open-source engine instead.
+detected by `is_youtube()` and routed into the YouTube pipeline instead of the
+plain HTTP engine — YouTube protocols (DASH, SABR, m3u8, signatures) are far
+outside the project's scope to re-implement from scratch, so the tool
+delegates extraction to the battle-tested open-source engine.
 
 - **Detection:** `is_youtube(url)` checks the hostname; the interactive paste
   path, the one-shot `--yt` flag, and the loop all route YouTube links the
@@ -512,8 +517,8 @@ open-source engine instead.
   soundtrack.
 - **One-time provisioning:** the first YouTube download fetches three
   binaries into a `tools/` folder next to the script (gitignored):
-  - `yt-dlp` — the downloader engine (The Unlicense). Downloaded from the
-    official GitHub release assets (`yt-dlp.exe` / `yt-dlp_linux` /
+  - `yt-dlp` — the downloader/extractor engine (The Unlicense). Downloaded
+    from the official GitHub release assets (`yt-dlp.exe` / `yt-dlp_linux` /
     `yt-dlp_macos`).
   - `deno` — JavaScript runtime (MIT). YouTube extraction without a JS
     runtime is deprecated in yt-dlp and returns incomplete format lists, so
@@ -526,8 +531,31 @@ open-source engine instead.
   falls back to best single-file). A height preset (`2160/1440/1080/720/480`)
   → `bv*[height<=H]+ba/b`. `audio` → `ba/b` (+ `-x --audio-format mp3` when
   ffmpeg exists). `--no-playlist`, `--newline`, and a
-  `%(title)s [%(id)s].%(ext)s` output template keep naming tidy; yt-dlp's own
-  progress output streams straight through to the console.
+  `%(title)s [%(id)s].%(ext)s` output template keep naming tidy.
+- **Build 45 — the multi-link split.** When ffmpeg is available and the
+  request is not audio-only, `_yt_run` stops delegating the actual download
+  to yt-dlp and instead:
+  1. `_yt_json()` asks yt-dlp to *extract* only (`-J --no-check-formats`) with
+     the URL as the positional target, returning the JSON info dict.
+  2. `_yt_split_download()` reads `requested_downloads[0].requested_formats`
+     (the concrete googlevideo stream URLs — which answer `206 Partial
+     Content` / `Accept-Ranges: bytes`, proven range-splittable). Each stream
+     is downloaded **sequentially in-process** through `run_one()` with 16
+     chunks — the exact same all-networks, resumable, verified engine used
+     for any other link — writing hidden temp files `.<vid>_s{i}.tmp` in the
+     save folder. `--limit`/`--links`/`--cookie`/`--referer`/`--sha` flags are
+     forwarded to those `run_one` calls so YouTube honors the same controls
+     as regular downloads.
+  3. The streams are merged with `ffmpeg -c copy` (no re-encode) into
+     `%(title)s [%(id)s].mp4/.webm/.mkv`; a merge failure retries once as
+     `.mkv`. Temp files are removed on success *and* on failure/stop, so a
+     broken run never litters the folder.
+  - **Fallbacks, in order:** non-HTTP / HLS (`.m3u8`) stream URLs, a single
+    non-splittable stream shape, any `run_one` failure, a failed merge, or a
+    user stop → `_yt_direct()` runs plain yt-dlp for the whole download
+    (audio-only always uses this path). No ffmpeg → `fmt = 'b'` (best
+    single-file, often capped ~720p). A single stream simply renames the temp
+    file into place.
 - **Failure modes:** region/age-locked videos surface as "Sign in to confirm
   you are not a bot" (watch once in a browser first). Exit code follows the
   same 0/1 convention as everything else (see §12).
@@ -683,8 +711,8 @@ link's individual ceiling matched the combined throughput).
   stale link at start needs re-copying.
 - **Throughput gains** depend on genuinely separate routes; two links sharing
   one bottleneck still complete safely, just without the speed boost.
-- **YouTube (build 44):** reliability centers on the third-party engines. A
-  yt-dlp release can break against YouTube's web client at any time (as all
+- **YouTube (builds 44/45):** reliability centers on the third-party engines.
+  A yt-dlp release can break against YouTube's web client at any time (as all
   YouTube downloaders do); `--selftest` does not cover YouTube (network +
   third-party dependent). Testing observed: missing JS runtime degrades the
   format list (fixed via deno), and the `android` client is currently broken

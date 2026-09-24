@@ -3,7 +3,41 @@
 > Renamed from **LinkBoost** in build 39. Every change bumps `BUILD` by 1;
 > release tags are named `v2.0-buildN`.
 
-## v2.0 build 44 — first stable release (current)
+## v2.0 build 45 — YouTube now uses all your networks (current)
+
+**What's new in this version**
+
+- **YouTube downloads split over every connection** - a YouTube video is no
+  longer downloaded by yt-dlp alone: BandwidthGoblin pulls the raw video and
+  audio streams through its own multi-link engine (all your networks at once,
+  16 chunks, resumable) and merges them back into one file with ffmpeg. YouTube
+  gets the same full treatment as any other link.
+- **Still dead simple** - paste a link, pick a quality (`Enter` = best,
+  `1080` / `720` / `audio` ...), done. Streaming keys `[P]` / `[R]` / `[ESC]`
+  now work during YouTube downloads too.
+- **No guide needed, by design** - the first prompt shows a one-time
+  "how to drive this" intro, every download dashboard shows the live keys
+  (`[P] pause  [R] resume  [ESC] stop safely  [H] help`), pressing **H**
+  flashes a help overlay right in the dashboard, and typing **help** at any
+  prompt prints the feature list.
+- **More information while it works** - starting a YouTube download names the
+  engines in use and ends with a verified `DONE` line (path + size).
+- **Bug fixes** - `--limit` / `--links` / `--cookie` / `--referer` / `--sha`
+  now also apply to YouTube split downloads; leftover temp stream files are
+  cleaned up on failure or stop; YouTube filenames handle Windows-forbidden
+  trailing dots/spaces and reserved names (`CON`, `NUL`, ...); unexpected
+  stream shapes fall back to plain yt-dlp instead of failing.
+
+**Everything from build 44 still here**
+
+- **YouTube downloads, built in** - paste any `youtube.com` / `youtu.be`
+  link and it downloads itself; pick `2160` / `1440` / `1080` / `720` /
+  `480` / `audio`, or one-line `--yt <link> 1080`
+- **Powered by proven open source** - **yt-dlp** engine + **deno** runtime +
+  **ffmpeg**, all auto-fetched once into `tools/`
+- **First stable release**
+
+## v2.0 build 44 — first stable release
 
 The beta label comes off, and YouTube joins the feast.
 
