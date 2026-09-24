@@ -1,165 +1,129 @@
-# BandwidthGoblin v2.0 - Guide
-
-Feed the goblin. Get your files faster.
+BandwidthGoblin - User Guide
 
 Downloads one file using all your internet connections at once
-(WiFi/LAN + phone hotspots) so it finishes faster. Free. No installs.
+(Wi-Fi + Ethernet + phone hotspot), so big downloads finish faster.
+Free, no account, no installs - just one Python file.
 
-Proven: 140 MB kernel.org download combined over 3 real links (Ethernet +
-hotspot + USB tether) at ~5.3 MB/s with 100% combining efficiency, 1 GiB OVH
-resume byte-intact, sha256 matching the server's official hash, and a
-single-connection 140 MB run at 11.2 MB/s.
+------------------------------------------------------------------------
 
-## How to use it (step by step)
+BEFORE YOU START
 
-Setup, one time: connect phones with USB cables, turn on USB tethering
-(Android: Settings → USB tethering. iPhone: Personal Hotspot ON + Trust).
-Windows/macOS/Linux packs live in windows/ mac/ linux/ folders.
+You need Python 3.8 or newer:
 
-Need Python? Grab the free installer: https://www.python.org/downloads/
-(Windows: tick "Add python.exe to PATH" during setup).
+  - Get the free installer from https://www.python.org/downloads/
+  - On Windows, tick "Add python.exe to PATH" during setup.
 
-1. Copy a download link (one or several, one per line).
-2. Double-click `RUN.bat` (opens Windows Terminal with the live dashboard).
-3. Link first: clipboard link is offered - Enter uses it,
-   `p` pastes another. Empty/non-link clipboard gets an explanation + re-ask.
-   Broken links (404/403/timeout) fail fast with the reason in plain words.
-4. Save spot: Enter accepts the suggestion (auto filename,
-   last folder remembered). A name without extension = new folder.
-   Never save straight to `D:\` (Windows blocks drive roots).
-5. Tune: Enter = automatic (starts 1 worker/link, scales clean
-   links up, backs throttled ones down). Manual e.g. `16 1` for strict sites.
-6. Watch: hero speed block, per-link rows, stopwatch + average, chunk strip.
-7. ESC stops safely - progress saved, rerun continues it.
-8. DONE prints file + size + time, notifies, opens the folder.
-   Type the next link or `N` to quit.
+To make the most of BandwidthGoblin, you can also:
 
-## What the screen tells you
+  - Plug in your phone with a USB cable and turn on USB tethering
+    (Android: Settings > Network > USB tethering; iPhone: Personal
+    Hotspot ON, then Trust the computer).
+  - Or turn on a Wi-Fi hotspot from the phone.
 
-- Hero block ▼ combined MB/s + traffic-light % + ETA.
-- Per-link rows, each its own color: green ● ONLINE,
-  cyan ● NEW, red ● OFFLINE;
-  speed green/yellow/red by pace; stopwatch + running average at the bottom.
-- Chunk strip: # done, > active, `.` waiting.
-- Legacy consoles get a one-line live HUD instead (auto-detected).
-- Questions: green = yes/go, red = no/quit.
+Each DIFFERENT internet connection the computer sees = one more lane for
+the download. Two lanes to the same router (e.g. Wi-Fi + LAN cable on one
+home router) still works safely - it just won't double your speed.
 
-## Good to know (plain words)
+------------------------------------------------------------------------
 
-- Plug/unplug phones anytime - checked every 2s, joins and
-  handoffs are automatic, nothing is lost.
-- Stopping is safe - ESC or closing keeps progress, rerun continues.
-- Expired/token links fail fast - copy a fresh link.
-- Speed limit = your lines + the website's throttle. Throttled sites
-  (Seedr free) do best with few workers - auto mode handles it.
-- Every download writes a white-text log into `logs/` next to the script,
-  first line carries the build number. Learning data accumulates in
-  `perf.jsonl`: `py bandwidthgoblin.py --report` shows per-connection history,
-  `--eta <host> <MB>` predicts the fastest plan.
-- Settings via environment variables:
-  - `BANDWIDTHGOBLIN_SHA256=<hex>` - verify the finished file's SHA-256 (streamed,
-    no extra disk usage). Any mismatch aborts cleanly.
-  - `MULTILINK_IFACES=0,2` - only use the listed interfaces (indices from logs).
-  - `MULTILINK_NODASH=1` - plain text logs, no dashboard.
-  - `MULTILINK_ASCII=1` - ASCII box drawing for very old terminals.
-  - `NO_COLOR=1` - disable all colors.
+DOWNLOADING, STEP BY STEP
 
-## If something looks wrong
+  1. Copy a download link (like a game, movie, or ISO download URL).
+  2. Double-click the launcher for your system:
+       Windows: RUN.bat
+       macOS:   run.command
+       Linux:   run.sh
+  3. The app offers your copied link - press Enter to use it.
+  4. Choose a save spot - press Enter to accept the suggested folder and
+     file name. (You can type your own, like D:\Games\patch.zip - but don't
+     save straight to a drive root like D:\.)
+  5. On the tuning question, press Enter for automatic (best choice).
+  6. Watch it fly. You'll see the combined speed, each connection's speed,
+     the progress bar, and how long it's been running.
+  7. Press ESC anytime to stop - your progress is saved. Run the same link
+     again later and it continues where it left off.
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Broken (404) / expired (403) | stale link | copy a fresh link |
-| Constant 429 sleeps | host throttling | automatic (fewer workers, backoff, pacing) |
-| Stuck near 100% | slow tail | automatic: fast links steal the remainder |
-| OFFLINE link | unplugged/failing | replug, it rejoins alone |
-| Permission denied | drive root/protected path | save inside a folder |
-| Not enough space | target full | message shows need vs free |
+When it finishes you'll see DONE, the file size, and the time it took.
+The finished file is checked automatically (size + file type + SHA-256
+when available) so you know it's not corrupt.
 
----
----
+------------------------------------------------------------------------
 
-# ADVANCED / TECHNICAL SECTION
+READING THE SCREEN
 
-## Architecture
+  - The big "MB/s" number is your combined speed across all connections.
+  - Each connection gets its own row: green dot = working,
+    cyan dot = new, red dot = offline (lost connection).
+  - The progress bar shows overall percent. The bar of # / > / . marks
+    finished / active / waiting chunks.
+  - On older consoles you get a simple one-line status instead - that's
+    normal.
 
-- Interface discovery per OS; per-link sockets via `source_address`; shared
-  SSL context; DSCP EF tags; browser UA + keep-alive reuse + pacing.
-- Chunk queue + per-link worker pools; direct seek-write (`O_BINARY`,
-  full-write loops); completion by piece counter, never byte totals.
-- Work stealing (single-steal mutex, 15s cooldown, 8MB/1MB-tail threshold,
-  exactly-once completion); circuit breaker (6 fails); hot-plug (2s);
-  per-IP redirect cache with edge following; global 4-conn/sec limiter;
-  socket abort on ESC; crash hooks + faulthandler into `.log`.
-- Threads: workers, monitor (5s), ticker (1s `.progress`), membership (2s),
-  dash (200ms), esc listener, auto-tuner (20s, 1-4 workers/link by 429 rate
-  and learned speed memory seeded from `perf.jsonl`).
+------------------------------------------------------------------------
 
-## Command-line flags (build 33+)
+GOOD TO KNOW
 
-Run `bandwidthgoblin.py --help` for inline usage. Flags work at any position.
+  - Plug in / unplug phones any time - new connections join automatically;
+    lost ones don't break anything.
+  - Stopping is always safe - ESC or Ctrl+C keeps your progress; rerun to
+    continue.
+  - Expired or token links (some file hosts) fail fast - just copy a
+    fresh link.
+  - Speed depends on your internet plus how nice the server is. If a site
+    throttles (like some free file hosts), BandwidthGoblin automatically
+    uses fewer workers and waits politely - that's the fastest safe option
+    there.
+  - The tool writes a white log of each download into a logs/ folder next
+    to the script (first line shows the build number).
 
-- `bandwidthgoblin.py --queue list.txt --out-dir D:\dl`
-  Headless batch. One entry per line: `URL` or `URL output-name.ext`
-  (`#` comments ok). No name = guessed from the URL (or `download_<n>.bin`
-  for token URLs that carry no filename); duplicate names get `_2`/`_3`
-  suffixes. `16 auto` tuning, no prompts. The run exits 0 when every file
-  was saved, 1 if any failed.
-- `bandwidthgoblin.py --jobs <1-8>` - download a `--queue` in parallel: up to N
-  entries at once, each in its own isolated process (no shared state, safe
-  for chained scripts). Works with per-line output names.
-- `bandwidthgoblin.py URL --out-dir D:\dl` - save a single link straight into a
-  folder (bypasses the save/tune prompts).
-- `bandwidthgoblin.py --dry-run URL ...` - probe only: final URL, size, type,
-  range support (with a live 206 check), and speeds BandwidthGoblin has learned
-  for that host. Downloads nothing.
-- `--sha <64-hex>` - deep-verify the finished file against a SHA-256.
-  Auto-detected from a `<filename>.sha256` file or `SHA256SUMS` sitting
-  next to the target, or `BANDWIDTHGOBLIN_SHA256` env var.
-- `--referer <url>` / `--cookie <str>` / `--header "Name: value"` (repeat)
-  - extra request headers for CDNs that demand them. Env equivalents:
-  `BANDWIDTHGOBLIN_REFERER`, `BANDWIDTHGOBLIN_COOKIE`, `BANDWIDTHGOBLIN_HEADERS="a: 1; b: 2"`.
-- `--open` / `--no-open` - force or suppress opening the folder when done
-  (default: auto-open in a real console).
-- `--limit <MB/s>` - cap the *combined* speed of all streams at once
-  (all workers share one token budget). Env: `BANDWIDTHGOBLIN_LIMIT`.
-- `--links 0,1` (or `--links 192.168.1.20,172.20.10.2`) - pick exactly which
-  interfaces to combine, by index or by IP. Equivalent env:
-  `MULTILINK_IFACES`. Before every multi-link run BandwidthGoblin probes each
-  link's real reachability to the download host; dead links (expired
-  hotspot, stale Wi-Fi) are dropped up front with a clear
-  "only 1 working connection - single-stream" warning instead of being
-  silently counted.
-- `--speedtest URL [URL ...]` - download real bytes and report each link's
-  speed plus the combined rate, then clean up the temp file. Stops after
-  ~8 MB of measurement (tune with `BANDWIDTHGOBLIN_SPEEDTEST_MB=2`).
-- `--history` - show the last 10 downloads (outcome, MB, average speed)
-  recorded in `history.jsonl`.
-- `--resume` - continue the newest saved `.resume` automatically. When you
-  start interactive and a `.resume` exists, BandwidthGoblin offers to resume it
-  (press `r`).
-- `--quiet` - keep only milestone lines on screen (no per-chunk chatter,
-  no launch banner). `--no-log` - skip the per-run disk log in `logs/`.
-- `--verify <manifest-or-dir>` - check downloaded files against stored
-  SHA-256 checksums, no re-download. A manifest is a standard `sha256sum`
-  file (`<64-hex>  filename`); a directory uses its `SHA256SUMS`, or any
-  `file.sha256` sidecars. Prints one PASS/FAIL line per file; exits 1 when
-  anything is missing or mismatched.
-- `--selftest` - built-in offline QA: serves a random 4 MiB payload from a
-  local ranged HTTP server, downloads it over 2 loopback links, verifies the
-  SHA-256, cleans up. Exits 0 when healthy. Stdlib only, no internet.
-- Exit codes: one-shot runs and batches exit `0` when the file was saved
-  and `1` on a hard failure (unreachable link, web page, no disk space,
-  permission, verification mismatch) - chain-friendly for scripts.
-- During a download press `P`/`p` to pause (sockets stay open, workers
-  wait) and `R`/`r` to resume. `ESC` still stops and saves a resume file.
-- `--report [host]` (existing), `--eta host MB` (existing), `--help`.
+------------------------------------------------------------------------
 
-## Files
+OPTIONAL COMMANDS
 
-- `bandwidthgoblin.py` (identical in root, windows/, mac/, linux/)
-- `RUN.bat` (+ per-OS `windows/RUN.bat`, `mac/run.command`, `linux/run.sh`)
-- `GUIDE.md` (this file, colorful), `GUIDE.txt` (plain), `CHANGELOG.md`
-  (every change = new build number)
-- Runtime (auto-created): `logs/` white logs, `perf.jsonl` learnings,
-  `history.jsonl` (last downloads), `.lastdir`,
-  `<out>.resume`, `<out>.progress`
+Open a terminal in the folder and run (Windows uses "py", macOS/Linux use
+"python3" in place of "py"):
+
+  py bandwidthgoblin.py --help               Shows every option
+  py bandwidthgoblin.py --selftest           Quick self-check that everything works
+  py bandwidthgoblin.py --dry-run <URL>      Inspects a link - size, type, speed -
+                                             without downloading
+  py bandwidthgoblin.py --speedtest <URL>    Measures each connection's real speed
+  py bandwidthgoblin.py --queue list.txt     Downloads many links from a text file
+                                             (one URL per line)
+  py bandwidthgoblin.py --links 0,1          Combine only specific connections
+                                             (listed as [0], [1]... at startup)
+  py bandwidthgoblin.py --limit 5            Cap the combined speed at 5 MB/s
+  py bandwidthgoblin.py URL --out-dir D:\dl  Download one link straight into a
+                                             folder, no questions
+
+During a download: press P to pause, R to resume, ESC to stop.
+
+------------------------------------------------------------------------
+
+IF SOMETHING LOOKS WRONG
+
+  "Link is broken" (404/403)   The link expired or the host error'd.
+                               Copy a fresh link.
+  Only 1 working connection    Extra connections can't reach the host.
+                               Check the hotspot / plug in the phone.
+  A link shows OFFLINE         Adapter lost / unplugged. Replug it - it
+                               rejoins automatically.
+  "Not enough space"           Target drive is full. Free space or save
+                               elsewhere.
+  Download stuck near 100%     One slow tail chunk. Normal - fast links
+                               steal the rest automatically.
+  Verification says CORRUPT    File didn't pass the checks. Rerun with a
+                               fresh link; the file wasn't kept.
+
+------------------------------------------------------------------------
+
+WHERE FILES LIVE
+
+Auto-created next to bandwidthgoblin.py:
+
+  logs/               one white log per download (newest 20 kept)
+  perf.jsonl          speed "memory" used to tune future downloads
+  history.jsonl       quick history of recent downloads
+  <filename>.resume   saved progress for interrupted downloads
+
+That's it - happy downloading.

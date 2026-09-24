@@ -1,9 +1,67 @@
 # BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **BandwidthGoblin v2.0, build 39 (beta)** — the current
+> This document describes **BandwidthGoblin v2.0, build 43 (beta)** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
+
+---
+
+## 0. The whole idea in plain English
+
+Most download tools pick **one** internet door and queue the whole file
+through it. If your computer has two doors — home Wi-Fi *and* a phone
+hotspot, say — the second door just sits there idle.
+
+BandwidthGoblin uses **every door at once**:
+
+1. **Ask** the server how big the file is and whether it allows partial
+   downloads (most big-file servers do).
+2. **Slice** the file into pieces ("chunks", 16 by default).
+3. **Send** each internet connection to fetch its own chunks at the same
+   time, every connection in parallel.
+4. **Write** each chunk straight into its exact spot in the file on disk —
+   there's no "assembly later" step.
+5. **Steal** unfinished chunks away from a connection that slows down or
+   drops, and let the healthy ones finish them, so a dead hotspot never
+   stalls the download.
+6. **Verify** the finished file (size + file signature + SHA-256 when a hash
+   is known) before reporting DONE.
+
+The rest of this document is the technical map of how those six steps are
+implemented and hardened.
+
+### What's in this document
+
+| § | Topic | You'll learn |
+|---|---|---|
+| 1 | What BandwidthGoblin is | the design rules that shape the code |
+| 2 | Architecture at a glance | processes, threads, moving parts |
+| 3 | Connection layer | finding & binding your internet links |
+| 4 | HTTP protocol handling | talking to servers safely |
+| 5 | Chunk scheduling & work stealing | how the load balancing works |
+| 6 | Link membership & hot-plug | phones joining / leaving mid-run |
+| 7 | Concurrency & locking | how shared state stays safe |
+| 8 | Persistence & data formats | logs, memory, resume files |
+| 9 | Verification subsystem | how files are proven intact |
+| 10 | CLI & environment reference | every command line switch & env var |
+| 11 | Batch mode | downloading many links at once |
+| 12 | Exit codes | what the exit status means |
+| 13 | Testing & QA | how the tool tests itself |
+| 14 | Build & release process | how versions ship |
+| 15 | Design invariants | the non-negotiables |
+| 16 | Known limitations & roadmap | honest field results |
+
+### Key numbers at a glance
+
+| What | Value | Means in plain words |
+|---|---|---|
+| Chunks per file | 16 (1–256) | the file is sliced this many ways |
+| Workers per link | auto → 4 (1–16) | parallel streams each connection may use |
+| Socket timeout | 20 s | a silent connection is given up on fast |
+| Slow-link threshold | 25 s with no progress | a link is treated as "quiet" and gets stolen from |
+| Hard watchdog | 180 s with nothing at all | belt-and-suspenders: never hang forever |
+| Smallest steal | 8 MiB (1 MiB near the end) | chunks smaller than this are left alone |
 
 ---
 

@@ -27,6 +27,8 @@ Log line 1 of every download carries `v{VERSION} build {BUILD}`.
 - merged line: the new build 42 implementation is kept as-is (it already includes every feature from the old LinkBoost build 22), branded BandwidthGoblin everywhere
 - loopback (127.0.0.x) and link-local (169.254.x) addresses remain dropped by default - not separate physical routes - with an opt-in BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 for LAN-loopback testing
 - landing-page fix: README + PROMO no longer embed docs/logo.png (it did not render on GitHub); the 👺 emoji is the logo now, and the PNG file is removed from the repo
+- docs made easier to understand: USER_GUIDE rewritten in plain language (no syntax-highlight spans, friendlier steps + troubleshooting table); TECHNICAL_GUIDE gains a plain-English primer (section 0) with a document map and key-numbers table; USER_GUIDE.txt regenerated to match
+- license: replaced MIT with the BandwidthGoblin License v1 - non-commercial (no selling the software or anything built on it), open-source-only / copyleft (any project using it must itself stay open source under the same license), and a clear no-warranty / no-liability clause (use entirely at your own risk)
 
 ## v2.0 build 42 (dev)
 - speedtest: slice into 256 fine chunks (~0.5MB each) so every live link contributes to the 8MB measurement window - 8 coarse 17.5MB chunks let one fast link satisfy the cap before the others land a byte, reporting a bogus single-link 'combined'; also updated §16 field table with build 41 2-link/3-link online results and the Wi-Fi-up-but-dead findings

@@ -1,16 +1,30 @@
-MIT License
+BandwidthGoblin License v1
+Non-Commercial · Open-Source Only · No Warranty
 
 Copyright (c) 2026 Ankit
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+to use, copy, modify, merge, publish, distribute, and sublicense copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+1. The above copyright notice and this permission notice shall be included in
+   all copies or substantial portions of the Software.
+
+2. NON-COMMERCIAL USE ONLY. You may not sell the Software, sell access to the
+   Software, or sell any product, service, or other work whose value depends
+   in whole or in part on the Software or on any modification or derivative
+   of it — whether for money or for any other form of compensation — without
+   the prior written permission of the copyright holder.
+
+3. OPEN SOURCE ONLY (copyleft). Any modification, derivative work, or
+   combined work that uses the Software, in whole or in part, must itself be
+   released and kept open source under this same license. You must make the
+   complete source code of that work freely available to its users, and you
+   may not use the Software in, or as part of, any closed-source or
+   proprietary project.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -19,3 +33,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+THE COPYRIGHT HOLDER ASSUMES NO RESPONSIBILITY FOR ANY HARM, DAMAGE, OR LOSS
+CAUSED BY THE USE, MISUSE, OR INABILITY TO USE THE SOFTWARE OR ANY
+MODIFICATION OR DERIVATIVE OF IT. USE THE SOFTWARE ENTIRELY AT YOUR OWN RISK.

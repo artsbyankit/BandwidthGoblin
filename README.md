@@ -112,6 +112,7 @@ BandwidthGoblin/
 ├── bandwidthgoblin.py      # the whole tool - canonical copy (single file)
 ├── RUN.bat                 # Windows launcher (finds Python for you)
 ├── CHANGELOG.md
+├── LICENSE                 # non-commercial, open-source-only license
 ├── docs/
 │   ├── USER_GUIDE.md       # friendly manual (plain language)
 │   ├── USER_GUIDE.txt      # same manual, plain text
@@ -135,3 +136,15 @@ BandwidthGoblin/
 The four `bandwidthgoblin.py` copies (root + packs) are kept **byte-for-byte
 identical** by `scripts/devbump.py` - the packs are just the tool ready to run
 on each OS.
+
+## License
+
+BandwidthGoblin is released under the **BandwidthGoblin License v1** (see
+[LICENSE](LICENSE)) — **non-commercial and open-source only**:
+
+- You may **not sell** the software, or anything that depends on it.
+- Any project that uses it **must be open source** and released under this
+  same license.
+- The software is provided **"as is"** with **no warranty and no liability** —
+  use it entirely at your own risk; the author is not responsible for any
+  harm or damage caused by its use.
