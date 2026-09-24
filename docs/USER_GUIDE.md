@@ -77,6 +77,11 @@ streams are downloaded with **every connection you have at once** (like any
 other link) and merged back into one file. The `P` / `R` / `ESC` keys work
 during a YouTube download too.
 
+**Subtitles:** after the video is saved, the tool checks for captions and, if
+any exist, drops **one** `<title>.<lang>.srt` file right next to the video —
+the video's original language when the uploader added it, otherwise English
+(auto-generated captions). No captions = nothing extra, no error.
+
 **First-time note:** the very first YouTube download quietly downloads the
 yt-dlp engine plus two helpers (a JS runtime and ffmpeg) — about 130–190 MB,
 one time, saved in a `tools/` folder next to the script. Your computer will
@@ -96,11 +101,17 @@ it once in a browser first, or pick another video.
 ## Reading the screen
 
 - The big **▼ MB/s** number is your **combined speed** across all connections.
-- Each connection gets its own row: **green ●** = working, **cyan ●** = new,
+- Every connection gets its own row: **green ●** = working, **cyan ●** = new,
   **red ●** = offline (lost connection).
+- When YouTube is *processing* (reading video info, merging video + audio at
+  the end, final integrity check) a small spinning `|\ /|` indicator with the
+  phase name and an elapsed-seconds counter shows instead of a blank screen —
+  it's working, not frozen.
 - The progress bar shows overall percent. The bar of `#` / `>` / `.` marks
   finished / active / waiting chunks.
-- On older consoles you get a simple one-line status instead — that's normal.
+- The dashboard is the **only** screen - every run in a normal terminal gets
+  it. It also **follows window resizes**: drag the console bigger or smaller
+  mid-download and it re-lays itself out to fit.
 
 ---
 
@@ -134,6 +145,7 @@ Open a terminal in the folder and run:
 | `py bandwidthgoblin.py --yt <URL> 1080` | Downloads a YouTube video at 1080p (or `best`, `720`, `480`, `audio`) |
 | `py bandwidthgoblin.py <YouTube URL> D:\videos` | YouTube link + save folder in one go |
 | `py bandwidthgoblin.py --links 0,1` | Combine only specific connections (listed as `[0]`, `[1]`... at startup) |
+| `py bandwidthgoblin.py --priority high` | **Higher tier on every connection**: 4 connections per link + maxed start caps, all at once (also `MULTILINK_PRIORITY=high`). Use it when a host doesn't throttle per IP so each link pulls more. YouTube itself caps each source IP, so there the number of *links* matters most — this won't speed YouTube up. |
 | `py bandwidthgoblin.py --limit 5` | Cap the combined speed at 5 MB/s |
 | `py bandwidthgoblin.py URL --out-dir D:\dl` | Download one link straight into a folder, no questions |
 
@@ -150,6 +162,7 @@ the feature list — you never need to have read this guide to drive it.
 | "Link is broken" (404 / 403) | The link expired or the host error'd | Copy a fresh link |
 | Only 1 working connection | Extra connections can't reach the host | Check the hotspot / plug in the phone |
 | A link shows **OFFLINE** | Adapter lost / unplugged | Replug it — it rejoins automatically |
+| YouTube: no dashboard, one-connection download | That video only offers an HLS streaming *playlist* (segments, not a range-splittable file) at that quality | Rare now; most videos prefer direct-file formats the tool splits over every connection — retry is usually enough |
 | "Not enough space" | Target drive is full | Free space or save elsewhere |
 | Download stuck near 100% | One slow tail chunk | Normal — fast links steal the rest automatically |
 | Verification says CORRUPT | File didn't pass the checks | Rerun with a fresh link; the file wasn't kept |

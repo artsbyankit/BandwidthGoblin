@@ -1,7 +1,7 @@
 # BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **BandwidthGoblin v2.0, build 45** — the current
+> This document describes **BandwidthGoblin v2.0, build 47** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
 
@@ -133,10 +133,10 @@ Engineering constraints that shape every decision in the code:
 |---|---|
 | Chunk workers (pool of 64) | Drive ranged `GET`s, one (link, chunk) at a time |
 | Membership | Poll `local_ips()`, join new links, park lost ones, re-queue chunks |
-| Auto-tune | Adjust `WORKER_CAP[ip]` (1–4) from server 429 pressure |
+| Auto-tune | Adjust `WORKER_CAP[ip]` (1–4; priority-high starts at 4) from server 429 pressure |
 | Watchdog | Hard-stop after 180 s with zero progress |
 | Ticker / monitor | Progress milestones, ETA, stall bookkeeping |
-| Dashboard | Render the live status (full / simple / off) |
+| Dashboard | Render the live status (full / off) |
 
 ---
 
@@ -255,9 +255,13 @@ silently corrupting the file.
 - `NCHUNKS` default **16**, clamped to `[1, 256]`, and clamped to ≤ file size
   for small files (each chunk ≥ 1 byte).
 - Chunk `i`: `[ size·i/N , size·(i+1)/N − 1 ]`.
-- Desired parallelism: `threads-per-link` (`auto` → **4**, clamped 1–16), so a
-  2-link run with 16 chunks schedules up to **2 links × 4 threads = 8
-  concurrent ranged streams**.
+- Desired parallelism: `threads-per-link` — `auto` = **1 per link** (normal
+  tier; a per-IP-throttled host like YouTube gains nothing from more
+  connections) or **4 when `--priority high` / `MULTILINK_PRIORITY=high`**
+  (opt-in for hosts that don't throttle per source IP). Clamped 1–16, and an
+  explicit "chunks threads" arg always overrides the tier. A 2-link high-tier
+  run with 16 chunks schedules up to **2 links × 4 threads = 8 concurrent
+  ranged streams**.
 
 ### 5.2 Execution
 
@@ -408,7 +412,12 @@ business-as-usual only when `os.path.getsize(out) == size`.
 
 ## 9. Verification subsystem
 
-`verify_file(out, size)` — the gate before a run is allowed to report DONE:
+`verify_file(out, size)` — the gate before a run is allowed to report DONE.
+While a YouTube run is between dashboards (reading video info, the ffmpeg
+video+audio merge, or this verify) a one-line `|\ /|` spinner with the phase
+name + elapsed seconds is rendered instead of a blank screen; it clears its
+own line when the phase ends and is fully silent when not on a TTY or under
+`--quiet` (build 47):
 
 1. **Size** must match the server-declared total.
 2. **Header inspection**: reject HTML (sign-in/captcha/error pages) at the top
@@ -438,7 +447,7 @@ sidecars. Exit code 1 on any failure.
 
 ```
 bandwidthgoblin.py                         interactive (paste a link after prompt)
-bandwidthgoblin.py URL OUT [16 auto]       direct download
+bandwidthgoblin.py URL OUT [auto auto]     direct download
 bandwidthgoblin.py URL --out-dir D:\dl     save straight into a folder
 bandwidthgoblin.py --dry-run URL ...       probe links: size, type, ranges, learned speed
 bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash
@@ -482,18 +491,21 @@ bandwidthgoblin.py --help / --version      help / version
 | `--selftest` | — | offline self-QA |
 
 Other env: `MULTILINK_NODASH=1` (disable dashboard even on a TTY),
-`MULTILINK_ASCII=1` (plain-ASCII dashboard), `MULTILINK_FORCE_DASH=1`
-(force the full unicode dashboard where auto-detection declines),
+`MULTILINK_ASCII=1` (plain-ASCII dashboard),
+`MULTILINK_SUB_LANGS=hi.*` (subtitle languages for YouTube .srt fetch),
 `NO_COLOR` (disable ANSI colors).
 
 ### Dashboard
 
-Auto-detects: full unicode (with per-link meters) on modern terminals /
-Windows Terminal / `TERM_PROGRAM`; a compact single line on legacy Windows
-consoles; **off** when output is piped, `--quiet`, `--jobs`, or
-`MULTILINK_NODASH=1`. Per-link row: name, IP, %-of-traffic, live MB/s,
-chunk/activity state. Keys (interactive only — headless automation simulates
-`lb.PAUSED`): `P`/`R` pause + resume, `ESC` stops safely, `H` toggles a
+**Build 47: the dashboard is the only UI** — the legacy one-line `simple`
+mode was deleted; any TTY gets `full` (plain Windows consoles get ANSI/VT
+enabled via the console API first), and `off` only for piped/`--quiet`/
+`--jobs`/`MULTILINK_NODASH=1`. The layout is **resize-aware**: `_geom()` is
+re-read every 0.2 s frame, so box width (50–160 cols), meters, sparkline and
+chunk bar all re-flow when the console window changes size. Per-link row:
+name, IP, %-of-traffic, live MB/s, chunk/activity state. Keys (interactive
+only — headless automation simulates `lb.PAUSED`): `P`/`R` pause + resume,
+`ESC` stops safely, `H` toggles a
 6-second help overlay drawn *inside* the dashboard frame (rendered by the
 same 0.2 s loop, so it cannot be clobbered by repaints). The bottom line
 always shows the key hints; a one-time "how to drive this" intro appears at
@@ -527,9 +539,12 @@ delegates extraction to the battle-tested open-source engine.
     streams into one file — without it 1080p+ video with sound is
     impossible. On Windows it fetches the official gyan.dev static build;
     macOS/Linux use a system `brew`/`apt` install if found.
-- **Format selection:** `best` → `bv*+ba/b` (best video + best audio, merged;
-  falls back to best single-file). A height preset (`2160/1440/1080/720/480`)
-  → `bv*[height<=H]+ba/b`. `audio` → `ba/b` (+ `-x --audio-format mp3` when
+- **Format selection:** `best` → `bv*[protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*+ba/b`
+  (prefer best splittable video + best audio, both direct-HTTP — the m3u8
+  exclusion keeps the multi-link engine usable on videos whose "best" would be
+  a visionos HLS playlist; falls back to the old unpinned selector, then best
+  single-file). A height preset (`2160/1440/1080/720/480`) → the same filter
+  with `[height<=H]`. `audio` → `ba/b` (+ `-x --audio-format mp3` when
   ffmpeg exists). `--no-playlist`, `--newline`, and a
   `%(title)s [%(id)s].%(ext)s` output template keep naming tidy.
 - **Build 45 — the multi-link split.** When ffmpeg is available and the
@@ -555,7 +570,62 @@ delegates extraction to the battle-tested open-source engine.
     user stop → `_yt_direct()` runs plain yt-dlp for the whole download
     (audio-only always uses this path). No ffmpeg → `fmt = 'b'` (best
     single-file, often capped ~720p). A single stream simply renames the temp
-    file into place.
+    file into place. **A save-drive shortfall is the exception:** there is no
+    fallback (yt-dlp needs the same bytes) — run_one returns `'disk-space'`
+    and the download stops cleanly before a single byte, telling the user to
+    free space, save elsewhere, or re-run at a smaller quality.
+  - **Build 46 fixes in this path.** (1) `range_probe()` now follows redirects
+    (bounded, 5 hops) instead of raising on `HTTP 302`. googlevideo redirects
+    a range probe arriving from a second network to that network's nearest
+    node; build 45 dropped the link there, silently collapsing YouTube splits
+    to one connection. (2) A new `STOP_USER` flag separates "a human pressed
+    ESC/Ctrl+C / the watchdog stalled" from ordinary failures, so ESC during a
+    stream returns `stopped` (resume saved, no retry) instead of cascading
+    into the yt-dlp fallback with `STOP` still armed. (3) `_clean_tmp()` also
+    removes `.progress` leftovers.
+  - **Build 47: subtitles.** `_yt_subs()` is called after a successful video
+    download (split *and* direct/fallback paths). When the extractor's info
+    dict carries `subtitles`/`automatic_captions`, it runs yt-dlp with
+    `--skip-download --sub-langs <lang> --sub-format srt/best --convert-subs
+    srt` (ffmpeg converts vtt→srt) and prints the single `.srt` that lands
+    next to the video. Language choice — exactly **one**: the video's own
+    language (first manual caption key; YouTube lists the uploader's original
+    track first, `info['language']` wins if present), else English, else the
+    first auto track; `--write-auto-subs` only when no manual track exists,
+    and any extra files are pruned so only one `.srt` remains. Override via
+    `MULTILINK_SUB_LANGS`. No captions → returns early without touching the
+    network; a failed sub fetch never fails the download.
+  - **Build 47: audit hardening (from real 2–3-link stop/resume testing).**
+    (1) The range probes at run start now execute **in parallel** across links,
+    and each probe caches its resolved redirect node in `REDIR[ip]`, so the
+    first chunks skip the redirect hop. (2) Chunk counts are **size-aware**
+    (~4 MB/chunk, clamped 4–64) and are the default everywhere
+    (`auto`); an explicit number is still honored (speedtest uses 256,
+    selftest 4). (3) `use` (the live link list) is mutated and read strictly
+    under `G_LOCK` — previously an unlocked append could race a failing-link
+    scan and crash with `list changed size during iteration`, losing the
+    resume. (4) On a user stop the split now **keeps** the partial stream and
+    run_one's `.resume` manifest (`_clean_tmp()` only runs on genuine failure),
+    and resume is accepted across runs for split streams even though
+    googlevideo re-signs URLs — the tmp name is video-id+stream scoped and the
+    size is binding, so a size+chunk-plan match continues the partial
+    (`resuming: skipping N done chunks`). Verified: stop at 10/64 chunks
+    (77.9 MB), re-run resumed and merged clean. (5) A `401/403/410` from a
+    stale per-link node now drops the cached `REDIR[ip]` before the retry so
+    `refresh_final()` can actually rescue an expired token — previously the 403
+    dead-loop could fail a long download. (6) `[P]` pause now refreshes
+    `LAST_PROGRESS`, so pausing longer than the 180 s watchdog no longer
+    force-stops the run. (7) Subtitle language matching is exact-code first,
+    then region-stripped (`en` matches `en-US`) with the **manual** track
+    preferred over auto. (8) Auto-tune logs no longer claim 2–4 threads per
+    link (it keeps one connection per link; the speed comes from aggregating
+    links, and YouTube/OVH throttle per source IP anyway). (9) Transient CDN rejections no longer abort the
+     multi-link engine: the preflight `head()` retries 4xx/5xx with backoff,
+     and if a split stream still fails the tool re-extracts fresh signed URLs
+     once and retries before downgrading to the single-connection yt-dlp
+     fallback (which now says so on screen). (10) The dashboard snapshots the
+     live link list once per frame under `G_LOCK` — the write-side lock was
+     already there, the read side is now too.
 - **Failure modes:** region/age-locked videos surface as "Sign in to confirm
   you are not a bot" (watch once in a browser first). Exit code follows the
   same 0/1 convention as everything else (see §12).
@@ -570,7 +640,7 @@ delegates extraction to the battle-tested open-source engine.
   `--out-dir` (absolute paths taken as-is).
 - Name collisions get `_2`, `_3` suffixes automatically.
 - `--jobs 1-8`: each entry becomes its own child process
-  (`python bandwidthgoblin.py URL OUT 16 auto <eflags>`) with
+  (`python bandwidthgoblin.py URL OUT auto auto <eflags>`) with
   `MULTILINK_NODASH=1` so parallel output stays readable. Environment
   (headers, cookie, ifaces, limits) is inherited, so per-queue tuning is one
   env export away.
@@ -670,9 +740,10 @@ link's individual ceiling matched the combined throughput).
 - **Servers throttle multi-stream clients.** OVH's edge has a hard ceiling of
   roughly 6–10 concurrent streams per source IP (post-flood state from a
   previous test); after that it responds with 429s and long stalls. This is
-  *why* `16 auto` (1–4 workers/link) is the practical maximum and ship-able
-  default, and why `256 16` is documented as a stress test, not a usage
-  pattern.
+  *why* the default is **one connection per link** (`auto auto`) — a source
+  IP's ceiling is per-IP, so BandwidthGoblin's speed comes from aggregating
+  *links*, not hammering one link with parallel streams, and why `256 16` is
+  documented as a stress test, not a usage pattern.
 - **Per-request ETags exist in the wild.** tele2's CDN returned a *different*
   ETag on every request, turning every `If-Range` into a full `200` rerun.
   Build 36's `VALIDATOR_BROKEN` flag detects this (first 200-on-If-Range) and

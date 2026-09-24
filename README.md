@@ -132,7 +132,7 @@ BandwidthGoblin downloads them for you automatically).
 
 ## The honest fine print
 
-**BandwidthGoblin v2.0 build 45 is the current stable release.** It works -
+**BandwidthGoblin v2.0 build 47 is the current stable release.** It works -
 the beta label is off.
 
 - **Where the speed comes from:** two *actually different* networks (e.g.

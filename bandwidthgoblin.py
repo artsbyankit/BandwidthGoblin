@@ -1,7 +1,7 @@
 """BandwidthGoblin: download ONE file over ALL your internet links
 (LAN + USB-tethered phones) at the same time, with resume, work-stealing,
 hot-plug and a live dashboard. Stdlib only."""
-import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64, urllib.request, shutil, zipfile, platform
+import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64, urllib.request, shutil, zipfile, platform, glob
 
 # A closed stdout (pipes, pagers like `| head`, GUI shells) must never kill a
 # run mid-download. Swap print for a version that swallows write errors.
@@ -45,7 +45,7 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 45
+BUILD = 47
 BETA = False  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
@@ -493,18 +493,31 @@ def _same_val(a, b):
     return bool(na) and na == nb
 
 def head(url):
-    for _ in range(4):
+    # Build 47 harden: googlevideo/CDN signed URLs intermittently 403/404/410
+    # from one edge while the SAME url works moments later (or after yt-dlp
+    # re-extracts fresh signatures). A transient first-request rejection used
+    # to abort the multi-link engine on the spot and silently downgrade the run
+    # to single-connection yt-dlp (no dashboard). Retry with backoff instead.
+    hops, fail = 0, 0
+    while True:
         conn, path = open_conn(url)
         conn.request('HEAD', path, headers={'User-Agent': UA, 'Accept': '*/*', 'Connection': 'keep-alive', **EXTRA_HEADERS})
         r = conn.getresponse(); r.read()
         if r.status in (301, 302, 303, 307, 308) and r.getheader('Location'):
             try: conn.close()
             except Exception: pass
+            hops += 1
+            if hops >= 4:
+                raise RuntimeError('too many redirects')
             url = urllib.parse.urljoin(url, r.getheader('Location')); continue
-        if r.status in (400, 401, 403, 404, 410):
-            raise RuntimeError(f'HTTP {r.status} for {redact(url)}')
-        if r.status >= 500:
-            raise RuntimeError(f'HTTP {r.status} (server error) for {redact(url)}')
+        if r.status in (400, 401, 403, 404, 410, 429) or r.status >= 500:
+            fail += 1
+            if fail < 4:
+                time.sleep(0.4 * fail)
+                try: conn.close()
+                except Exception: pass
+                continue
+            raise RuntimeError(f'HTTP {r.status} for {redact(url)} (after {fail} attempts)')
         try:
             size = int(r.getheader('Content-Length') or 0)
         except (ValueError, TypeError):
@@ -528,43 +541,63 @@ def head(url):
             except Exception:
                 pass
         return url, size, ar, meta
-    raise RuntimeError('too many redirects')
 
 def range_probe(url, ip=None, size=0):
     """Prove the server honours a REAL mid-file Range before multi-link mode.
     A range starting at 0 can be special-cased by servers (raw.githubusercontent
     serves `bytes=0-N` as 206 but re-sends 200 full bodies for other offsets).
     We probe a range that never starts at 0 (size//2) to catch such liars.
-    Returns (proved_206, total). 200-only servers must drop to single stream."""
+    Returns (proved_206, total). 200-only servers must drop to single stream.
+    Redirects are followed (bounded). Some CDNs - googlevideo in particular -
+    answer a range probe from a second source IP with a 302 to that link's
+    nearest node; dropping such links would silently switch YouTube downloads
+    back to a single connection, so a redirect is re-probed instead."""
     if size and size > 1:
         s0, e0 = max(1, size // 2), size - 1
     else:
         s0, e0 = 0, 262143
-    conn, path = open_conn(url, ip)
-    try:
-        conn.request('GET', path, headers={'Range': f'bytes={s0}-{e0}', 'User-Agent': UA,
-                                          'Accept': '*/*', 'Accept-Encoding': 'identity', **EXTRA_HEADERS})
-        r = conn.getresponse()
-        cr = r.getheader('Content-Range') or ''
-        enc = (r.getheader('Content-Encoding') or '').strip().lower()
-        r.read(1 << 20)
-        if r.status == 206:
-            m = re.match(rf'bytes\s+{s0}-(\d+)/(\d+|\*)$', cr.strip())
-            if m and enc in ('', 'identity'):
-                tot = 0 if m.group(2) == '*' else int(m.group(2))
-                return True, tot
-            raise RuntimeError(f'bad 206 probe: {cr!r}')
-        if r.status == 200:
-            cl = r.getheader('Content-Length') or '0'
-            try:
-                total = int(cl)
-            except ValueError:
-                total = 0
-            return False, total if enc in ('', 'identity') else 0
-        raise RuntimeError(f'range probe: HTTP {r.status}')
-    finally:
-        try: conn.close()
-        except Exception: pass
+    cur = url
+    for _hop in range(5):
+        conn, path = open_conn(cur, ip)
+        try:
+            conn.request('GET', path, headers={'Range': f'bytes={s0}-{e0}', 'User-Agent': UA,
+                                              'Accept': '*/*', 'Accept-Encoding': 'identity', **EXTRA_HEADERS})
+            r = conn.getresponse()
+            cr = r.getheader('Content-Range') or ''
+            enc = (r.getheader('Content-Encoding') or '').strip().lower()
+            if r.status in (301, 302, 303, 307, 308):
+                loc = r.getheader('Location') or ''
+                r.read(1 << 16)
+                if not loc or not (loc.startswith('http://') or loc.startswith('https://')):
+                    raise RuntimeError(f'range probe: HTTP {r.status} (bad Location)')
+                cur = urllib.parse.urljoin(cur, loc)
+                continue
+            r.read(1 << 20)
+            if r.status == 206:
+                m = re.match(rf'bytes\s+{s0}-(\d+)/(\d+|\*)$', cr.strip())
+                if m and enc in ('', 'identity'):
+                    tot = 0 if m.group(2) == '*' else int(m.group(2))
+                    # The probe just walked this link's own redirect chain to
+                    # its nearest CDN node - remember it so the first chunks
+                    # skip the hop instead of re-walking it (build 47).
+                    if cur != url:
+                        with REDIR_LOCK: REDIR[ip] = cur
+                    return True, tot
+                raise RuntimeError(f'bad 206 probe: {cr!r}')
+            if r.status == 200:
+                cl = r.getheader('Content-Length') or '0'
+                try:
+                    total = int(cl)
+                except ValueError:
+                    total = 0
+                if cur != url:
+                    with REDIR_LOCK: REDIR[ip] = cur
+                return False, total if enc in ('', 'identity') else 0
+            raise RuntimeError(f'range probe: HTTP {r.status}')
+        finally:
+            try: conn.close()
+            except Exception: pass
+    raise RuntimeError('range probe: too many redirects')
 
 LOGFILE = None
 LOGLOCK = threading.Lock()
@@ -584,6 +617,7 @@ DASH_EMA = {}
 SPARK = collections.deque(maxlen=90)
 STOP = False
 STOP_REASON = 'ESC'
+STOP_USER = False                            # human/watchdog stop requested (ESC/Ctrl+C/stall) - never auto-continue
 RUN_DONE = threading.Event(); RUN_DONE.set()   # set => no helper threads should run
 LAST_PROGRESS = 0.0                            # watchdog: last time bytes were written
 WATCHDOG_SECS = 180                            # stall this long -> hard stop
@@ -804,7 +838,7 @@ def ip_failed(ip):
             log(f'link {ip} parked {cool}s ({"gone" if not present else "failing"})')
 
 def _esc_listener():
-    global STOP, STOP_REASON
+    global STOP, STOP_REASON, STOP_USER
     try:
         if os.name == 'nt':
             import msvcrt
@@ -816,6 +850,7 @@ def _esc_listener():
                         if c == b'\x1b':
                             STOP = True
                             STOP_REASON = 'ESC'
+                            STOP_USER = True
                             return
                         if c in (b'p', b'P', b'r', b'R') and not RUN_DONE.is_set():
                             _toggle_pause()
@@ -838,6 +873,7 @@ def _esc_listener():
                         if c == '\x1b':
                             STOP = True
                             STOP_REASON = 'ESC'
+                            STOP_USER = True
                             return
                         if c.lower() in ('p', 'r') and not RUN_DONE.is_set():
                             _toggle_pause()
@@ -986,6 +1022,14 @@ def fetch_direct(idx, s, e, ip, out, tok):
                 if r.status in (401, 403, 410):
                     log(f'chunk{idx} via {ip}: HTTP {r.status}, backing off')
                     r.read()
+                    # An expired per-link node URL (googlevideo re-signs per
+                    # request) makes REDIR[ip] stale: refresh_final() can only
+                    # rescue us if the next attempt stops preferring that dead
+                    # cached node (build 47 audit M1 - without this, a 403
+                    # token deadline replayed against the same dead node until
+                    # give-up, failing long downloads days before expiry).
+                    with REDIR_LOCK:
+                        REDIR.pop(ip, None)
                     with STAT_LOCK:
                         STAT429[ip] = STAT429.get(ip, 0) + 1
                     retries += 1
@@ -1048,6 +1092,7 @@ def fetch_direct(idx, s, e, ip, out, tok):
                         last_recv = time.time()   # pause is not a stall - don't trip the watchdog
                         with THR_LOCK:
                             THR_LAST = time.time()   # paused time must not earn throttle tokens
+                        LAST_PROGRESS = time.time()   # ...nor trip the stall watchdog either (audit M2: a >3min [P] pause used to hard-stop the run)
                         continue
                     with CHUNK_LOCK:
                         if bounded and CHUNK_OWNER.get(idx) != tok:
@@ -1164,6 +1209,7 @@ def watchdog():
         if now - T0 > WATCHDOG_SECS and now - LAST_PROGRESS > WATCHDOG_SECS:
             STOP = True
             STOP_REASON = 'WATCHDOG'
+            STOP_USER = True
             log(f'WATCHDOG: no progress for {int(now-LAST_PROGRESS)}s - forcing stop instead of hanging')
             abort_sockets()
             return
@@ -1192,63 +1238,6 @@ def monitor():
         with CHUNK_LOCK:
             fin = NCH > 0 and CHUNKS_DONE >= NCH
         if fin: break
-
-def simple_dash(out):
-    ema = 0.0
-    with TOTAL_DONE_LOCK: prev = TOTAL_DONE
-    with LINK_LOCK: prev_links = dict(LINK_DONE)
-    prev_t = time.time()
-    try:
-        while True:
-            if STOP or RUN_DONE.is_set():
-                break
-            time.sleep(0.5)
-            with TOTAL_DONE_LOCK: tot = TOTAL_DONE
-            now = time.time(); dt = now - prev_t or 1e-6
-            inst = (tot - prev) / dt
-            ema = inst if ema == 0 else ema * 0.7 + inst * 0.3
-            prev, prev_t = tot, now
-            with LINK_LOCK: cur = dict(LINK_DONE)
-            el = now - T0
-            tsize = TOTAL_SIZE if TOTAL_SIZE else 0
-            tshow = min(tot, tsize) if tsize else tot
-            pct = f'{tshow/tsize*100:.1f}%' if tsize else ''
-            with CHUNK_LOCK:
-                ndone = sum(1 for v in CHUNK_STATE.values() if v == 'done')
-            parts = []
-            _lshort = {}
-            for _n, _ip in enumerate(list(LINK_THREADS.keys())):
-                _lshort[_ip] = f'L{_n+1}'
-            for ip in list(LINK_THREADS.keys()):
-                v = (cur.get(ip, 0) - prev_links.get(ip, 0)) / dt
-                e = DASH_EMA.get(ip, 0.0)
-                e = v if e == 0 else e * 0.7 + v * 0.3
-                DASH_EMA[ip] = e
-                parts.append(f'{_lshort[ip]}:{e/1e6:.1f}')
-            prev_links = cur
-            _savg = tot / el if el else 0
-            line = (f'\r{tshow/1e6:.0f}/{tsize/1e6:.0f}MB {pct} {CINV(f" {ema/1e6:.2f}MB/s ")} '
-                    f'[{"|".join(parts)}] {ndone}/{NCH} {int(el)//60:02d}:{int(el)%60:02d} avg {_savg/1e6:.2f}   ')
-            try:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-            except Exception:
-                return
-            with CHUNK_LOCK:
-                fin = NCH > 0 and CHUNKS_DONE >= NCH
-            if fin:
-                break
-    finally:
-        try:
-            sys.stdout.write('\n')
-            sys.stdout.flush()
-        except Exception:
-            pass
-        try:
-            sys.stdout.write(f'downloaded at: {os.path.abspath(out)}\n')
-            sys.stdout.flush()
-        except Exception:
-            pass
 
 def ticker(out):
     pf = out + '.progress'
@@ -1296,7 +1285,39 @@ def CYES(s): return _col('1;38;2;166;227;161', s)
 def CNO(s): return _col('1;38;2;243;139;168', s)
 def CYLW(s): return _col('1;38;2;249;226;175', s)
 def CDIM(s): return _col('2', s)
-def CINV(s): return _col('7;1', s)
+
+def _spin(msg, gate):
+    """Animated one-line loading indicator for the YouTube processing phases
+    that run with NO dashboard (reading video info, ffmpeg merge, chunk
+    verify). Terminal-only: silent when the output is piped or --quiet is on,
+    and it clears its own line when done so the next status line prints
+    cleanly instead of stacking garbage (build 47)."""
+    if QUIET or not _tty():
+        return
+    def _run():
+        i = 0
+        t0 = time.time()
+        try:
+            while not gate() and not STOP:
+                sys.stdout.write('\r\x1b[2K' + _col('1;38;2;180;190;254', '|/-\\'[i % 4])
+                                 + ' ' + CDIM(msg) + CDIM(f'  {int(time.time() - t0)}s'))
+                sys.stdout.flush()
+                time.sleep(0.1)
+                i += 1
+            sys.stdout.write('\r\x1b[2K')
+            sys.stdout.flush()
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+
+def _yticks(msg, fn):
+    """Run fn() while showing the loading animation. Returns fn()'s result."""
+    done = threading.Event()
+    _spin(msg, done.is_set)
+    try:
+        return fn()
+    finally:
+        done.set()
 
 def _cell(s, width):
     vis = _ANSI.sub('', s)
@@ -1328,15 +1349,20 @@ def dash(out, use, nchunks):
          if uni else
          {'tl': '+', 'tr': '+', 'bl': '+', 'br': '+', 'h': '-', 'v': '|',
           'lt': '+', 'rt': '+', 'full': '#', 'empty': '-', 'dot': '*'})
-    try:
-        import shutil as _sh
-        _tw = _sh.get_terminal_size().columns
-    except Exception:
-        _tw = 108
-    W = min(max(_tw - 2, 50), 124)
-    top = C['box'] + G['tl'] + G['h'] * W + G['tr'] + C['rst']
-    mid = C['box'] + G['lt'] + G['h'] * W + G['rt'] + C['rst']
-    bot = C['box'] + G['bl'] + G['h'] * W + G['br'] + C['rst']
+    def _geom():
+        """Current console width -> (inner width, top/mid/bottom borders).
+        Re-read every frame so the dashboard tracks window resizes."""
+        try:
+            import shutil as _sh
+            _tw = _sh.get_terminal_size().columns
+        except Exception:
+            _tw = 90
+        w = min(max(_tw - 2, 50), 160)
+        return (w,
+                C['box'] + G['tl'] + G['h'] * w + G['tr'] + C['rst'],
+                C['box'] + G['lt'] + G['h'] * w + G['rt'] + C['rst'],
+                C['box'] + G['bl'] + G['h'] * w + G['br'] + C['rst'])
+    W, top, mid, bot = _geom()
 
     def row(s):
         return C['box'] + G['v'] + C['rst'] + ' ' + _cell(s, W - 2) + ' ' + C['box'] + G['v'] + C['rst']
@@ -1359,6 +1385,7 @@ def dash(out, use, nchunks):
             time.sleep(0.2)
             if STOP or RUN_DONE.is_set():
                 break
+            W, top, mid, bot = _geom()
             with TOTAL_DONE_LOCK: tot = TOTAL_DONE
             if TOTAL_SIZE: tot = min(tot, TOTAL_SIZE)
             now = time.time(); dt = now - prev_t or 1e-6
@@ -1373,9 +1400,11 @@ def dash(out, use, nchunks):
             etas = f'{eta/60:.0f}m{eta%60:02.0f}s' if ema_tot > 0 else '--'
             _pc = pct * 100
             _pcc = C['red'] if _pc < 30 else (C['ylw'] if _pc < 70 else C['grn'])
+            with G_LOCK:
+                _ips = list(use)   # one consistent snapshot per frame - `use` mutates under G_LOCK (build 47 audit C1)
             _LCMAP = {}
             _LCC = ['sky', 'peach', 'pink', 'teal', 'cyan', 'ylw']
-            for _ni, _nip in enumerate(list(use)):
+            for _ni, _nip in enumerate(_ips):
                 _LCMAP[_nip] = _LCC[_ni % len(_LCC)]
             L = [top,
                  row(f"{C['bld']}{C['cyan']}BANDWIDTHGOBLIN v{VERSION} b{BUILD}{_VER_LABEL}{C['rst']}  {C['dim']}{name}{C['rst']}  {_pcc}{C['bld']}{_pc:5.1f}%{C['rst']}"),
@@ -1384,14 +1413,14 @@ def dash(out, use, nchunks):
                  mid]
             mx = 1e-6
             spd = {}
-            for ip in list(use):
+            for ip in _ips:
                 v = (cur.get(ip, 0) - prev_links.get(ip, 0)) / dt
                 e = DASH_EMA.get(ip, 0.0)
                 e = v if e == 0 else e * 0.7 + v * 0.3
                 DASH_EMA[ip] = e
                 spd[ip] = e
                 mx = max(mx, e)
-            for ip in list(use):
+            for ip in _ips:
                 parked = not ip_ok(ip)
                 is_new = ip in LINK_JOINED and (time.time() - LINK_JOINED.get(ip, 0)) < 60
                 if parked:
@@ -1513,12 +1542,12 @@ def auto_tune():
                 with G_LOCK:
                     WORKER_CAP[ip] = cap + 1
                     LINK_THREADS[ip] = cap + 1
-                log(f'auto-tune {(ip or "link")}: workers -> {cap + 1} (no throttling)')
+                log(f'auto-tune {(ip or "link")}: tuning cap {cap + 1} (throttle-free, 1 connection per link)')
             elif w > 15 and cap > 1:
                 with G_LOCK:
                     WORKER_CAP[ip] = cap - 1
                     LINK_THREADS[ip] = cap - 1
-                log(f'auto-tune {(ip or "link")}: workers -> {cap - 1} (throttled x{w})')
+                log(f'auto-tune {(ip or "link")}: tuning cap {cap - 1} (throttled x{w})')
         last = cur
         with CHUNK_LOCK:
             if NCH > 0 and CHUNKS_DONE >= NCH:
@@ -1650,10 +1679,17 @@ def membership(q, out, per_link, use, ex, rid):
             if not _ok_new:
                 log(CNO(f'new link {ip} does not serve ranges - not joining multi-link'))
                 continue
-            use.append(ip)
+            # Every mutation of `use` must sit under G_LOCK: this thread runs
+            # concurrently with run_one's `_NoRange` handler and the dashboard,
+            # which both iterate `use` under G_LOCK (build 47 audit C1 - an
+            # unlocked append racing a comprehension raised "list changed size
+            # during iteration", crashing the run and losing the resume).
             with G_LOCK:
+                use.append(ip)
                 LINK_THREADS[ip] = per_link
             LINK_JOINED[ip] = time.time()
+            if STOP or RUN_DONE.is_set():
+                break   # executor is shutting down - spawning now would just error (build 47 polish)
             with G_LOCK:
                 if ip not in G_STARTED:
                     G_STARTED.add(ip)
@@ -2053,7 +2089,7 @@ def reset_state():
     # PAUSED), and history-learned speeds must not ghost across runs.
     PAUSED = False
     LINK_SPEED = {}
-    STOP_REASON = 'ESC'; RUN_DONE.set(); LAST_PROGRESS = 0.0
+    STOP_REASON = 'ESC'; STOP_USER = False; RUN_DONE.set(); LAST_PROGRESS = 0.0
     _LABEL_CACHE.clear(); _LABEL_FINED.clear(); _PTR_CACHE.clear(); _NEIGH_T = 0.0
     V_ETAG = ''; V_LM = ''; RANGE_VERIFIED = False; EXPECT_SHA = ''
     VALIDATOR_BROKEN = False
@@ -2173,6 +2209,7 @@ def print_report(host=''):
         print(f'  {(r.get("host") or "?")[:40]:<42} {r.get("mb_total",0):.0f}MB in {r.get("sec",0):.0f}s = {r.get("mbps_avg",0):.2f} MB/s  links:{len(r.get("links",[]))}')
     print('--- tune advice ---')
     print('  throttled hosts (many 429s in logs): 16 1 | fast CDNs: 16 3 | default: 16 auto')
+    print('  all links maxed in one go: --priority high (4 connections on every link)')
 
 def print_eta(host, mb):
     try:
@@ -2208,7 +2245,7 @@ def _human(n):
         n /= 1024
     return f'{n:.1f} TB'
 
-_VALUE_FLAGS = ('queue', 'out-dir', 'referer', 'cookie', 'sha', 'header', 'limit', 'links', 'jobs', 'verify', 'yt')
+_VALUE_FLAGS = ('queue', 'out-dir', 'referer', 'cookie', 'sha', 'header', 'limit', 'links', 'jobs', 'verify', 'yt', 'priority')
 
 def _parse_flags(tokens):
     """Split new-style --flags out of a token list.
@@ -2415,6 +2452,10 @@ def _usage():
             '  BANDWIDTHGOBLIN_HEADERS "a: 1; b: 2")  --limit MB/s (aggregate cap, =BANDWIDTHGOBLIN_LIMIT)\n'
             '  --links 0,1   pick which interfaces to combine: indices or IPs\n'
             '                 (e.g. --links 0,1 = WiFi + LAN, =MULTILINK_IFACES)\n'
+            '  --priority high   HIGH tier on EVERY link: 4 connections + start caps\n'
+            '                 maxed (normal = 1 connection/link, =MULTILINK_PRIORITY=high).\n'
+            '                 Helps hosts that don\'t throttle per source IP; YouTube\n'
+            '                 throttles per IP, so link count matters most there.\n'
             '  --open / --no-open   --history   --resume   --speedtest\n'
             '  --quiet (milestones only)   --no-log (no disk logs)\n'
             '  --jobs N   download a --queue in parallel (1-8 files at once);\n'
@@ -2441,10 +2482,18 @@ def _usage():
 
 _YT_HOSTS = ('youtube.com', 'youtu.be')
 _YT_PRESET_KEYS = ('2160', '1440', '1080', '720', '480')
+# Build 47: prefer direct-HTTP formats for the multi-link split. The
+# unpinned "best" can be a visionos HLS (m3u8) stream on some videos - which
+# is a playlist of segments and can't be range-split, so the run silently
+# falls to single-connection yt-dlp with no dashboard. Excluding m3u8 up
+# front picks the best splittable (https) format; the old selector stays as
+# the fallback for videos that only offer HLS.
 _YT_FMT = {
-    '2160': 'bv*[height<=2160]+ba/b', '1440': 'bv*[height<=1440]+ba/b',
-    '1080': 'bv*[height<=1080]+ba/b', '720': 'bv*[height<=720]+ba/b',
-    '480': 'bv*[height<=480]+ba/b',
+    '2160': 'bv*[height<=2160][protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*[height<=2160]+ba/b',
+    '1440': 'bv*[height<=1440][protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*[height<=1440]+ba/b',
+    '1080': 'bv*[height<=1080][protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*[height<=1080]+ba/b',
+    '720': 'bv*[height<=720][protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*[height<=720]+ba/b',
+    '480': 'bv*[height<=480][protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*[height<=480]+ba/b',
 }
 
 def is_youtube(u):
@@ -2522,7 +2571,7 @@ def _yt_pick(url, headless, quality):
         return 'ba/b', True, 'audio-only'
     if q in _YT_FMT:
         return _YT_FMT[q], False, f'up to {q}p'
-    return 'bv*+ba/b', False, 'best available'
+    return ('bv*[protocol!*=m3u8]+ba[protocol!*=m3u8]/bv*+ba/b', False, 'best available')
 
 def _deno_bin():
     return os.path.join(_script_dir(), 'tools', 'deno.exe' if os.name == 'nt' else 'deno')
@@ -2664,6 +2713,75 @@ def _yt_json(exe, fmt, url, deno):
     except Exception:
         return None, 'yt-dlp JSON parse failed'
 
+def _yt_subs(exe, url, od, deno, ff, info=None):
+    """Best-effort: drop exactly ONE .srt next to the video - the video's
+    original language (the uploader's manual track, which YouTube lists first)
+    when one exists, else English; auto-generated captions only when there is
+    no manual track. Override with MULTILINK_SUB_LANGS=hi.*. The info dict
+    from the split path lets us skip the network call entirely when the video
+    has no subtitles at all. Never fails the download."""
+    if info is not None:
+        man = list((info.get('subtitles') or {}).keys())
+        auto = list((info.get('automatic_captions') or {}).keys())
+        if not man and not auto:
+            return False
+        env = os.environ.get('MULTILINK_SUB_LANGS')
+        if env:
+            lang = env
+        else:
+            own = (info.get('language') or '').lower()
+            base = own.split('-')[0] if own else ''
+            if base and base in man:
+                lang = base                      # exact code, manual track
+            elif own and own in auto:
+                lang = own
+            elif base:
+                m2 = [k for k in man if k and k.split('-')[0] == base]
+                a2 = [k for k in auto if k and k.split('-')[0] == base]
+                lang = (m2 or a2 or man or auto or ['en'])[0]   # manual first (audit M5)
+            elif man:
+                lang = man[0]
+            else:
+                lang = auto[0] if auto else 'en'
+        wanted = lang
+        use_auto = lang not in man       # manual track preferred over auto
+    else:
+        # Direct/fallback path: no info dict - let yt-dlp pick (manual first,
+        # auto as fallback) and keep just one of whatever files land.
+        env = os.environ.get('MULTILINK_SUB_LANGS')
+        wanted = env or 'en.*'
+        use_auto = True
+    print(CDIM(f'  subtitles: checking for .srt ({wanted})...'), flush=True)
+    cmd = [exe, '--no-playlist', '--skip-download',
+           '--write-subs', '--sub-langs', wanted,
+           '--sub-format', 'srt/best',
+           '-o', os.path.join(od, '%(title)s [%(id)s].%(ext)s'), url]
+    if use_auto:
+        cmd += ['--write-auto-subs']
+    if deno:
+        cmd += ['--js-runtimes', f'deno:{deno}']
+    if ff:
+        cmd += ['--ffmpeg-location', ff, '--convert-subs', 'srt']
+    t0 = time.time()
+    try:
+        subprocess.run(cmd, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', timeout=120)
+    except Exception:
+        return False
+    new = sorted(f for f in glob.glob(os.path.join(od, '*.srt')) +
+                 glob.glob(os.path.join(od, '*.vtt'))
+                 if os.path.exists(f) and os.path.getmtime(f) >= t0 - 1)
+    if len(new) > 1:
+        # keep the manual track - auto-generated files carry a "-" in the name
+        new.sort(key=lambda f: (os.path.basename(f).count('-'),
+                                len(os.path.basename(f))))
+        new = new[:1]
+    for f in new:
+        print(CDIM(f'  subtitles: {os.path.basename(f)}'), flush=True)
+    if not new:
+        print(CDIM(f'  no subtitles (wanted: {wanted})'), flush=True)
+    return bool(new)
+
 def _yt_split_download(info, od, ff, eflags):
     """Download the requested YouTube streams through BandwidthGoblin's own
     multi-link engine - chunk-split over every connection, resumable - then
@@ -2713,21 +2831,30 @@ def _yt_split_download(info, od, ff, eflags):
                     os.remove(t)
                 if os.path.exists(t + '.resume'):
                     os.remove(t + '.resume')
+                if os.path.exists(t + '.progress'):
+                    os.remove(t + '.progress')
             except Exception:
                 pass
 
     try:
         for i, (fid, fext, u) in enumerate(good):
             if STOP:
-                _clean_tmp()
+                # Keep every partial + run_one's own .resume manifest on ANY
+                # stop: the next run continues the streams. Build 47 audit M4:
+                # _clean_tmp() used to delete the resume the instant run_one
+                # saved it, then _yt_run promised "progress is preserved" - a lie.
                 return None, 'stopped'
-            print(CYLW(f'  stream {fid} ({fext}): all links, 16 chunks...'), flush=True)
+            print(CYLW(f'  stream {fid} ({fext}): all links, size-aware chunks...'), flush=True)
             reset_state()
-            res = run_one(u, tmp[i], ['16', 'auto'] + eflags)
+            res = run_one(u, tmp[i], ['auto', 'auto'] + eflags)
             if res == 'retry-single':
                 log('single-stream retry after multi-link failure (youtube stream)')
                 reset_state()
                 res = run_one(u, tmp[i], ['1', '1'] + eflags)
+            if res == 'disk-space':
+                return None, 'not enough disk space for this stream'
+            if STOP and STOP_USER:
+                return None, 'stopped'   # partials + .resume stay on disk for the next run
             if res == 'error' or res is None:
                 _clean_tmp()
                 return None, f'stream {fid} download failed'
@@ -2735,8 +2862,7 @@ def _yt_split_download(info, od, ff, eflags):
                 _clean_tmp()
                 return None, f'stream {fid} produced no file'
         if STOP:
-            _clean_tmp()
-            return None, 'stopped'
+            return None, 'stopped'   # both streams are complete - keep them; next run merges
         if len(good) == 1:
             os.replace(tmp[0], final)
             try:
@@ -2745,12 +2871,14 @@ def _yt_split_download(info, od, ff, eflags):
                 pass
             return True, final
         # two streams: merge with the bundled ffmpeg (copy, no re-encode)
-        m = subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final],
-                           capture_output=True)
+        m = _yticks('merging video + audio (copy, no re-encode)',
+                    lambda: subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final],
+                                           capture_output=True))
         if m.returncode != 0:
             final2 = os.path.join(od, f'{safe} [{vid}].mkv')
-            m2 = subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final2],
-                                capture_output=True)
+            m2 = _yticks('merging video + audio (copy, no re-encode)',
+                         lambda: subprocess.run([ff, '-y', '-i', tmp[0], '-i', tmp[1], '-c', 'copy', final2],
+                                                capture_output=True))
             if m2.returncode != 0:
                 _clean_tmp()
                 return None, 'ffmpeg merge failed'
@@ -2786,10 +2914,25 @@ def _yt_direct(exe, fmt, url, od, deno, ff, is_audio):
             print(CNO(f'YouTube {kind} failed.') + CDIM(
                 '\nIf the error mentions "Sign in to confirm you are not a bot", the video is '
                 'region/age-locked - try a different video, or watch it once in a browser first.'))
+        elif not is_audio:
+            _yt_subs(exe, url, od, deno, ff)
         return p.returncode == 0
     except Exception as ex:
         print(CNO(f'YouTube {kind} failed: {ex}'))
         return False
+
+def _yt_nospace(got, od):
+    """A save-drive shortfall cannot be solved by ANY engine - a single-
+    connection yt-dlp run needs the same bytes and would just fail partway (or
+    fill the disk). Explain and stop instead of silently downgrading to a
+    no-dashboard, one-network download (build 47 harden)."""
+    drv = os.path.splitdrive(os.path.abspath(od))[0] or 'the save drive'
+    print(CNO(f'  cannot download: {got}.') + CYLW(
+        f'\n  This video at this quality needs more free space than {drv} has,'
+        f'\n  so the multi-link engine stopped before downloading anything.'
+        f'\n  Free up space, save to another drive, or re-run with a smaller quality'
+        f' (e.g. 1080 in the quality prompt).'), flush=True)
+    return False
 
 def _yt_run(url, headless, fl, quality=None, eflags=None):
     """Download a single YouTube link. Returns True on success. Build 45: when
@@ -2836,19 +2979,45 @@ def _yt_run(url, headless, fl, quality=None, eflags=None):
         return _yt_direct(exe, fmt, url, od, deno, ff, True)
     if ff:
         # Preferred: split the raw streams over every connection, then merge.
-        info, jerr = _yt_json(exe, fmt, url, deno)
+        info, jerr = _yticks('reading video info', lambda: _yt_json(exe, fmt, url, deno))
         if info:
             ok, got = _yt_split_download(info, od, ff, eflags)
             if ok:
+                _yt_subs(exe, url, od, deno, ff, info)
                 return True
+            if 'not enough disk space' in got:
+                return _yt_nospace(got, od)
+            # Build 47 harden: a non-stop failure is usually a transient
+            # reject (one googlevideo edge refused the signed URL while the
+            # next one accepts it). Re-extract fresh signatures and give the
+            # multi-link engine ONE more shot before dropping to plain
+            # single-connection yt-dlp. Re-signed URLs routinely fix the 403.
+            if got != 'stopped':
+                info2, jerr2 = _yticks('reading video info (re-signing URLs)',
+                                       lambda: _yt_json(exe, fmt, url, deno))
+                if info2:
+                    ok, got = _yt_split_download(info2, od, ff, eflags)
+                    if ok:
+                        _yt_subs(exe, url, od, deno, ff, info2)
+                        return True
+                else:
+                    got = f'{got} (re-extract: {jerr2})'
+            if 'not enough disk space' in got:
+                return _yt_nospace(got, od)
             if got == 'stopped':
                 print(CDIM('  stopped - your progress is preserved.'))
                 return False
-            print(CDIM(f'  multi-link split not possible ({got}) - using the yt-dlp engine...'))
+            _hint = (' This video only offers an HLS streaming playlist at that quality -'
+                     ' not range-splittable, so it falls back to one connection (no dashboard).'
+                     if 'HLS' in got else '')
+            print(CDIM(f'  multi-link split not possible ({got}) - using the yt-dlp engine (single connection, no dashboard)...{_hint}'))
         else:
-            print(CDIM(f'  multi-link split not possible ({jerr}) - using the yt-dlp engine...'))
+            print(CDIM(f'  multi-link split not possible ({jerr}) - using the yt-dlp engine (single connection, no dashboard)...'))
     else:
         print(CYLW('no ffmpeg - taking the best single-file format (often capped at ~720p).'))
+    if STOP and STOP_USER:
+        print(CDIM('  stopped - your progress is preserved.'))
+        return False
     return _yt_direct(exe, fmt, url, od, deno, ff, False)
 
 def _subrun(url, out, rest):
@@ -2877,7 +3046,7 @@ def _batch_run(items, fl, eflags, jobs):
         save_lastdir(od)
     except Exception:
         pass
-    rest = ['16', 'auto'] + eflags
+    rest = ['auto', 'auto'] + eflags
     used, plan = set(), []
     for i, (url, out) in enumerate(items, 1):
         if out and os.path.isabs(out):
@@ -3084,7 +3253,7 @@ def main():
         return
     fl, args = _parse_flags(raw)
     eflags = []
-    for _k in ('referer', 'cookie', 'sha', 'header', 'limit', 'links'):
+    for _k in ('referer', 'cookie', 'sha', 'header', 'limit', 'links', 'priority'):
         for _v in (fl.get(_k) or []):
             eflags.append(f'--{_k}={_v}')
     if 'open' in fl:
@@ -3189,7 +3358,7 @@ def main():
             res = run_one(args[0], args[1], ['1', '1'] + eflags)
         # Build 32: meaningful exit code for one-shot CLI runs - scripts and
         # --jobs children rely on 0 = file saved, 1 = hard failure.
-        sys.exit(0 if res != 'error' else 1)
+        sys.exit(0 if res == 'ok' else 1)
         return
     pending = [a for a in args if not str(a).startswith('--')]
     _qout = {u: o for u, o in qitems if o}
@@ -3284,7 +3453,7 @@ def main():
                 _bn = f'{_stem}_{_k}{_ext}'
                 out = os.path.join(os.path.dirname(out) or od, _bn)
             _used.add(os.path.basename(out))
-            rest = ['16', 'auto'] + eflags
+            rest = ['auto', 'auto'] + eflags
             try:
                 res = run_one(url, out, rest)
             except Exception as ex:
@@ -3295,7 +3464,7 @@ def main():
                 log('single-stream retry after multi-link failure')
                 reset_state()
                 res = run_one(url, out, ['1', '1'] + eflags)
-            if res == 'error' or res is None:
+            if res in ('error', 'disk-space') or res is None:
                 _hfails += 1
             if pending:
                 continue
@@ -3317,8 +3486,8 @@ def main():
             break
         if os.path.dirname(os.path.abspath(out)) not in ('', '.'):
             save_lastdir(os.path.dirname(os.path.abspath(out)))
-        tune = ask('chunks + threads/link? [Enter = 16 auto]: ')
-        rest = (tune.split()[:2] or ['16', 'auto']) + eflags
+        tune = ask('chunks + threads/link? [Enter = auto auto]: ')
+        rest = (tune.split()[:2] or ['auto', 'auto']) + eflags
         try:
             res = run_one(url, out, rest)
         except Exception as ex:
@@ -3359,6 +3528,11 @@ def run_one(url, out, rest):
     global VALIDATOR_BROKEN
     import queue as _q, shutil
     _flg, rest = _parse_flags(list(rest))
+    # Priority tier for EVERY link (build 47): normal = 1 connection per link,
+    # high = 4 connections per link + higher start caps, so all links run at a
+    # higher tier in one go. Explicit "chunks threads/link" args still win.
+    _prio = (_flg.get('priority') or [os.environ.get('MULTILINK_PRIORITY', '')])[0].strip().lower()
+    PRIO_HIGH = _prio in ('high', 'boost', 'max', 'turbo')
     EXTRA_HEADERS = {}
     if _flg.get('referer') or os.environ.get('BANDWIDTHGOBLIN_REFERER'):
         EXTRA_HEADERS['Referer'] = (_flg.get('referer') or [os.environ['BANDWIDTHGOBLIN_REFERER']])[0]
@@ -3382,8 +3556,17 @@ def run_one(url, out, rest):
         if len(_sha_flag) != 64 or not re.fullmatch(r'[0-9a-f]+', _sha_flag):
             print(CNO(f'ignoring bad --sha value (need 64 hex chars): {_sha_flag[:16]}...'), flush=True)
             _sha_flag = ''
+    # Chunk count: 'auto' (or no arg) = pick from the file size after we
+    # learn it (~4 MB/chunk); an explicit number is always respected
+    # (speedtest wants fine 256-chunk measurment, selftest uses 10).
+    _want_auto_chunks = True
     try:
-        NCHUNKS = int(rest[0]) if len(rest) > 0 else 16
+        _c0 = rest[0] if len(rest) > 0 else ''
+        if isinstance(_c0, str) and _c0.lower() == 'auto':
+            NCHUNKS = 16   # placeholder; the size-aware rule picks the real count
+        else:
+            NCHUNKS = int(_c0)
+            _want_auto_chunks = False
     except (ValueError, IndexError):
         NCHUNKS = 16
     # 0/negative chunks would wedge the run; thousands of chunks would turn
@@ -3394,7 +3577,7 @@ def run_one(url, out, rest):
         _r1 = rest[1] if len(rest) > 1 else 'auto'
         if isinstance(_r1, str) and _r1.lower() == 'auto':
             AUTO = True
-            TPL = 1
+            TPL = 4 if PRIO_HIGH else 1
         else:
             TPL = int(_r1)
     except (ValueError, IndexError):
@@ -3512,7 +3695,8 @@ def run_one(url, out, rest):
             log('only 1 working connection: single-stream mode')
         elif _dead:
             print(CYES(f'connected links: {_n} working - combining active'), flush=True)
-    _warm_labels(list(use))
+    with G_LOCK:
+        _warm_labels(list(use))
     seed_speeds()
     try:
         url, size, ar, meta = head(url)
@@ -3538,10 +3722,21 @@ def run_one(url, out, rest):
         tty = False
     if not tty or os.environ.get('MULTILINK_NODASH') == '1':
         DASH_MODE = 'off'
-    elif os.name != 'nt' or os.environ.get('WT_SESSION') or os.environ.get('TERM_PROGRAM') or os.environ.get('MULTILINK_FORCE_DASH') == '1':
-        DASH_MODE = 'full'
     else:
-        DASH_MODE = 'simple'
+        # The full btop-style dashboard is the only UI. On a plain Windows
+        # console make sure ANSI/VT rendering is enabled so colors and box
+        # drawing actually display.
+        DASH_MODE = 'full'
+        if os.name == 'nt':
+            try:
+                import ctypes
+                _k = ctypes.windll.kernel32
+                _h = _k.GetStdHandle(-11)              # STD_OUTPUT_HANDLE
+                _m = ctypes.c_uint32()
+                if _k.GetConsoleMode(_h, ctypes.byref(_m)):
+                    _k.SetConsoleMode(_h, _m.value | 0x0004)   # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            except Exception:
+                pass
     DASH_ON = DASH_MODE == 'full'
     log(f'display: {DASH_MODE} (tty={tty})')
     log(f'final url: {redact(url)}')
@@ -3549,12 +3744,25 @@ def run_one(url, out, rest):
     ar_ok = bool(ar and 'bytes' in ar.lower())
     if size and ar_ok and len(use) >= 2 and NCHUNKS > 1:
         _ptot, _ok_ips = 0, []
-        for _ip in list(use):
+
+        def _probe_one(_ip):
             try:
-                _a, _b = range_probe(url, _ip, size)
+                return _ip, range_probe(url, _ip, size)
             except Exception as ex:
                 log(f'range probe {_ip or "default"}: {ex} - dropping this link from multi-link')
+                return _ip, None
+
+        # Probe every link in parallel - a googlevideo-style redirect chain is
+        # walked per link, so serial probing costs one RTT*redirects per link
+        # before ANY chunk starts (build 47).
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(2, len(use))) as _pex:
+            with G_LOCK:
+                _probe_ips = list(use)
+            _pres = list(_pex.map(_probe_one, _probe_ips))
+        for _ip, _r in _pres:
+            if not _r:
                 continue
+            _a, _b = _r
             if _a:
                 _ok_ips.append(_ip)
                 if _b and not _ptot:
@@ -3578,6 +3786,14 @@ def run_one(url, out, rest):
         use = [None]; size = size or 0
         NCHUNKS = 1; TPL = 1
         TOTAL_SIZE = size
+    # Size-aware chunk count (build 47): 16 fixed chunks is silly for a 0.3 MB
+    # file (16 tiny round-trips) and coarse for a 500 MB one. ~4 MB per chunk
+    # keeps overhead low and work-stealing granularity fine.
+    if size and _want_auto_chunks and NCHUNKS != 1:
+        _n = max(4, min(64, int(size / 4e6)))
+        if _n != NCHUNKS:
+            log(f'size-aware chunks: {NCHUNKS} -> {_n} (~{size/_n/1e6:.1f} MB each)')
+            NCHUNKS = _n
     pardir = os.path.dirname(os.path.abspath(out))
     if pardir:
         os.makedirs(pardir, exist_ok=True)
@@ -3590,7 +3806,10 @@ def run_one(url, out, rest):
             msg = f'Not enough disk space: need {size/1e6:.0f} MB, free {free/1e6:.0f} MB at {pardir}. Free space or pick another drive.'
             print(msg, flush=True)
             log(msg)
-            return 'error'
+            # Distinct from 'error': a disk shortfall cannot be fixed by any
+            # download engine (single-connection needs the same bytes), so
+            # callers must NOT fall back to plain yt-dlp (build 47 harden).
+            return 'disk-space'
     manifest = out + '.resume'
     skip = set()
     have_resume = False
@@ -3599,6 +3818,18 @@ def run_one(url, out, rest):
             m = json.load(open(manifest))
             same_file = (m.get('url') == ORIG_URL and m.get('size') == size
                          and m.get('chunks') == NCHUNKS)
+            # YouTube split streams: googlevideo re-signs the URL on every
+            # extraction, so across two runs the URL can never match. The tmp
+            # path is scoped to video id + stream index and the size is
+            # binding, so a partial from a stopped run is safe to continue
+            # (build 47 audit M3/M4 - previously a stopped YT run could NEVER
+            # resume: URL mismatch forced a silent full re-download).
+            _yt_stream = out.endswith('.tmp') and bool(re.search(r'_s\d+\.tmp$', out))
+            if not same_file and _yt_stream and m.get('size') == size and m.get('chunks') == NCHUNKS:
+                log('resume: stream URL re-signed but size matches - continuing partial')
+                same_file = True
+            elif _yt_stream and m.get('size') == size and m.get('chunks') != NCHUNKS:
+                log(f'resume rejected: chunk plan changed ({m.get("chunks")} -> {NCHUNKS}) - re-downloading')
             if m.get('vok') is not False:
                 # Validators proven unstable in the earlier run (see VALIDATOR_BROKEN):
                 # comparing them again would just reject a perfectly resumable file,
@@ -3649,11 +3880,16 @@ def run_one(url, out, rest):
         with LINK_LOCK:
             mem = dict(LINK_SPEED)
         for ip in use:
-            s = mem.get(ip, 0)
-            start_cap = 3 if s >= 3 else (2 if s >= 1 else 1)
+            if PRIO_HIGH:
+                start_cap = 4   # priority tier: every link starts maxed out
+            else:
+                s = mem.get(ip, 0)
+                start_cap = 3 if s >= 3 else (2 if s >= 1 else 1)
             WORKER_CAP[ip] = start_cap
             LINK_THREADS[ip] = start_cap
-        log('auto-tune start caps from history: ' + ', '.join(f'{ip or "?"}x{WORKER_CAP[ip]}' for ip in use))
+        log(('priority tier: high - 4 connections/link on EVERY link' if PRIO_HIGH
+             else 'auto-tune start caps from history') + ': ' +
+            ', '.join(f'{ip or "?"}x{WORKER_CAP[ip]}' for ip in use))
     for i in range(NCHUNKS):
         s = size * i // NCHUNKS if size else 0
         e = (size * (i + 1) // NCHUNKS - 1) if size else ''
@@ -3681,15 +3917,15 @@ def run_one(url, out, rest):
     wd = _t.Thread(target=watchdog, daemon=True)
     wd.start()
     if AUTO and NCHUNKS > 1:
-        log('auto-tune on: workers scale 1-4 per link by throttling')
+        _tier = ('priority tier HIGH: 4 connections per link on ALL links'
+                 if PRIO_HIGH else
+                 '1 connection per link (speed comes from links, not threads)')
+        log(f'auto-tune on: per-link throttle handling, {_tier}')
         at = _t.Thread(target=auto_tune, daemon=True)
         at.start()
     dd = None
     if DASH_MODE == 'full' and NCHUNKS > 1:
         dd = _t.Thread(target=dash, args=(out, use, NCHUNKS), daemon=True)
-        dd.start()
-    elif DASH_MODE == 'simple':
-        dd = _t.Thread(target=simple_dash, args=(out,), daemon=True)
         dd.start()
     workers = []
     for ip in use:
@@ -3758,7 +3994,9 @@ def run_one(url, out, rest):
                                         CHUNK_END[idx0] = s0 - 1
                                         CHUNK_STATE[idx0] = '.'
                                         q.put((idx0, s0, e0))
-                            if not [u for u in use if u]:
+                            with G_LOCK:
+                                _left = [u for u in use if u]
+                            if not _left:
                                 log('no link can multi-range - auto-restarting as single-stream')
                                 RETRY_SINGLE = True
                                 with G_LOCK:
@@ -3803,6 +4041,7 @@ def run_one(url, out, rest):
                     stopped = True
                     STOP = True
                     STOP_REASON = 'CTRL+C'
+                    STOP_USER = True
                     log('STOPPED by Ctrl+C - writing resume file')
                     abort_sockets()
                 break
@@ -3865,7 +4104,8 @@ def run_one(url, out, rest):
         log(f'WARNING: size mismatch got={got} expected={TOTAL_SIZE}')
     else:
         log('size verified OK')
-    _ok, _why = verify_file(out, TOTAL_SIZE)
+    _ok, _why = _yticks('verifying chunks (final integrity check)',
+                        lambda: verify_file(out, TOTAL_SIZE))
     log(f'intact check: {_why}')
     print((CYES('INTACT: ') if _ok else CNO('CORRUPT?: ')) + _why, flush=True)
     if not _ok:
