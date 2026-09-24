@@ -4,6 +4,9 @@ BandwidthGoblin - Windows
 WHAT IT DOES
   Downloads one file using all your internet connections at once
   (LAN cable + USB-tethered phones), so big files finish faster.
+  Also downloads YouTube videos - paste any YouTube link and pick
+  quality (best / 1080 / 720 / ... / audio); first use fetches the
+  yt-dlp engine (~30-40 MB) automatically.
 
 RUN IT
   1. Connect phones with USB, turn on USB tethering

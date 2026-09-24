@@ -1,7 +1,7 @@
 # BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **BandwidthGoblin v2.0, build 43 (beta)** — the current
+> This document describes **BandwidthGoblin v2.0, build 44 (first stable release)** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
 
@@ -87,8 +87,9 @@ Engineering constraints that shape every decision in the code:
 ### Versioning
 
 - `VERSION` / `BUILD` constants at the top of `bandwidthgoblin.py` (e.g.
-  `VERSION = '2.0'`, `BUILD = 43`).
-- `BETA = True` adds the `(beta)` label to the banner, `--version`,
+  `VERSION = '2.0'`, `BUILD = 44`).
+- `BETA = False` — build 44 is the first **stable** release; `BETA = True`
+  adds the `(beta)` label to the banner, `--version`,
   dashboard header, and seeded log lines.
 - The build number is bumped by 1 for every change; release tags are named
   `v2.0-buildN` (see §14).
@@ -446,6 +447,9 @@ bandwidthgoblin.py --queue list.txt [--out-dir D:\dl]
 bandwidthgoblin.py --history               show the last 10 completed downloads
 bandwidthgoblin.py --resume                continue the newest saved .resume download
 bandwidthgoblin.py --speedtest URL         measure each link + combined speed (8 MB cap)
+bandwidthgoblin.py --yt URL [quality]      YouTube download (quality = best | 2160 | 1440 |
+                                         1080 | 720 | 480 | audio; interactive mode
+                                         auto-detects youtube.com / youtu.be links)
 bandwidthgoblin.py --verify <manifest|dir> check files against sha256sum checksums
 bandwidthgoblin.py --selftest              built-in offline QA
 bandwidthgoblin.py --help / --version      help / version
@@ -473,6 +477,7 @@ bandwidthgoblin.py --help / --version      help / version
 | `--quiet` | — | milestones only, no dashboard |
 | `--no-log` | — | no disk logs |
 | `--jobs N` | — | parallel batch downloads (1–8) |
+| `--yt URL` | — | YouTube download (`--yt URL 1080` caps height; see §10b) |
 | `--verify` | — | checksum manifest/dir check |
 | `--selftest` | — | offline self-QA |
 
@@ -489,6 +494,45 @@ consoles; **off** when output is piped, `--quiet`, `--jobs`, or
 `MULTILINK_NODASH=1`. Per-link row: name, IP, %-of-traffic, live MB/s,
 chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
 (currently only interactive — headless automation simulates `lb.PAUSED`).
+
+---
+
+### YouTube mode (§10b)
+
+Since build 44 (first stable release), any link whose host is
+`youtube.com` / `youtu.be` (including `m.`, `music.`, `shorts` variants) is
+routed through **yt-dlp** instead of BandwidthGoblin's HTTP engine — YouTube
+protocols (DASH, SABR, m3u8, signatures) are far outside the project's scope
+to re-implement from scratch, so the tool delegates to the battle-tested
+open-source engine instead.
+
+- **Detection:** `is_youtube(url)` checks the hostname; the interactive paste
+  path, the one-shot `--yt` flag, and the loop all route YouTube links the
+  same way. `--yt URL 1080` caps height; `--yt URL audio` grabs the
+  soundtrack.
+- **One-time provisioning:** the first YouTube download fetches three
+  binaries into a `tools/` folder next to the script (gitignored):
+  - `yt-dlp` — the downloader engine (The Unlicense). Downloaded from the
+    official GitHub release assets (`yt-dlp.exe` / `yt-dlp_linux` /
+    `yt-dlp_macos`).
+  - `deno` — JavaScript runtime (MIT). YouTube extraction without a JS
+    runtime is deprecated in yt-dlp and returns incomplete format lists, so
+    the tool passes `--js-runtimes deno:<path>`.
+  - `ffmpeg` — media merger (LGPL). Needed to merge Best-Video + Best-Audio
+    streams into one file — without it 1080p+ video with sound is
+    impossible. On Windows it fetches the official gyan.dev static build;
+    macOS/Linux use a system `brew`/`apt` install if found.
+- **Format selection:** `best` → `bv*+ba/b` (best video + best audio, merged;
+  falls back to best single-file). A height preset (`2160/1440/1080/720/480`)
+  → `bv*[height<=H]+ba/b`. `audio` → `ba/b` (+ `-x --audio-format mp3` when
+  ffmpeg exists). `--no-playlist`, `--newline`, and a
+  `%(title)s [%(id)s].%(ext)s` output template keep naming tidy; yt-dlp's own
+  progress output streams straight through to the console.
+- **Failure modes:** region/age-locked videos surface as "Sign in to confirm
+  you are not a bot" (watch once in a browser first). Exit code follows the
+  same 0/1 convention as everything else (see §12).
+- **License note:** these are third-party open-source projects fetched at
+  runtime, not bundled in the repo — credit lives in the README and guides.
 
 ---
 
@@ -511,6 +555,9 @@ chunk/activity state. Pause keys: `P`/`R` toggle, `ESC` stops safely
 |---|---|
 | `0` | file saved & verified (or utility succeeded) |
 | `1` | hard failure (download error, verify failed, batch had any failed file) |
+
+`--yt` follows the same convention: `0` = video/audio saved, `1` = engine
+unavailable or the download failed.
 
 ---
 
@@ -636,3 +683,10 @@ link's individual ceiling matched the combined throughput).
   stale link at start needs re-copying.
 - **Throughput gains** depend on genuinely separate routes; two links sharing
   one bottleneck still complete safely, just without the speed boost.
+- **YouTube (build 44):** reliability centers on the third-party engines. A
+  yt-dlp release can break against YouTube's web client at any time (as all
+  YouTube downloaders do); `--selftest` does not cover YouTube (network +
+  third-party dependent). Testing observed: missing JS runtime degrades the
+  format list (fixed via deno), and the `android` client is currently broken
+  by YouTube's SABR experiment, so the web client + deno is the default path.
+  Region/age-locked videos refuse unauthenticated downloads by design.

@@ -4,6 +4,9 @@ BandwidthGoblin - Linux
 WHAT IT DOES
   Downloads one file using all your internet connections at once
   (LAN + USB-tethered phones), so big files finish faster.
+  Also downloads YouTube videos - paste any YouTube link and pick
+  quality (best / 1080 / 720 / ... / audio); first use fetches the
+  yt-dlp engine (~30-40 MB) automatically.
 
 FIRST TIME ONLY
   1. Install python3 if missing: sudo apt install python3   (or dnf/pacman equivalent)

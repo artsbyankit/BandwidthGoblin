@@ -49,6 +49,39 @@ available) so you know it's not corrupt.
 
 ---
 
+## YouTube downloads
+
+YouTube links work right out of the box — no separate program, no account.
+
+1. **Copy a YouTube link** (a normal `youtube.com/watch?v=...` or short
+   `youtu.be/...` link, or a **Shorts** / **Music** link).
+2. **Start BandwidthGoblin** and paste the link when it asks — the tool spots
+   it's a YouTube link automatically. (Or run it directly from a terminal:
+   `py bandwidthgoblin.py --yt <link> 1080`.)
+3. **Pick the quality:**
+   - press **Enter** for **best available** (what the video itself offers —
+     2160p, 1440p, 1080p, ...)
+   - or type `2160` / `1440` / `1080` / `720` / `480` to cap the height
+   - or type `audio` to save **just the soundtrack** (MP3 when possible)
+4. **Pick a save folder** — press **Enter** for the suggested one, or type your
+   own, e.g. `D:\Videos`.
+5. Watch the progress. The file is saved with the video's **title** as the
+   name.
+
+**First-time note:** the very first YouTube download quietly downloads the
+yt-dlp engine plus two helpers (a JS runtime and ffmpeg) — about 130–190 MB,
+one time, saved in a `tools/` folder next to the script. Your computer will
+tell you what's happening as it fetches them. After that, YouTube downloads
+are offline and instant to start.
+
+**Honest note:** YouTube downloads use the famous open-source **yt-dlp**
+engine (with **deno** and **FFmpeg** for the newest YouTube formats and
+1080p+ quality) — big respect and thanks to those projects. If a rare video
+says *"Sign in to confirm you are not a bot"*, it's region/age-locked: watch
+it once in a browser first, or pick another video.
+
+---
+
 ## Reading the screen
 
 - The big **▼ MB/s** number is your **combined speed** across all connections.
@@ -87,6 +120,8 @@ Open a terminal in the folder and run:
 | `py bandwidthgoblin.py --dry-run <URL>` | Inspects a link — size, type, speed — *without* downloading |
 | `py bandwidthgoblin.py --speedtest <URL>` | Measures each connection's real speed |
 | `py bandwidthgoblin.py --queue list.txt` | Downloads many links from a text file (one URL per line) |
+| `py bandwidthgoblin.py --yt <URL> 1080` | Downloads a YouTube video at 1080p (or `best`, `720`, `480`, `audio`) |
+| `py bandwidthgoblin.py <YouTube URL> D:\videos` | YouTube link + save folder in one go |
 | `py bandwidthgoblin.py --links 0,1` | Combine only specific connections (listed as `[0]`, `[1]`... at startup) |
 | `py bandwidthgoblin.py --limit 5` | Cap the combined speed at 5 MB/s |
 | `py bandwidthgoblin.py URL --out-dir D:\dl` | Download one link straight into a folder, no questions |

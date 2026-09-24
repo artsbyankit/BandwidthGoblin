@@ -9,6 +9,9 @@ history.jsonl
 *.resume.tmp
 *.progress
 
+# YouTube engine downloads (yt-dlp/deno/ffmpeg) - fetched on first use
+tools/
+
 # Platform packs (pack/*) carry their own runtime state when run in place
 pack/*/logs/
 pack/*/perf.jsonl

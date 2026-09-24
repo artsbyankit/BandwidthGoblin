@@ -4,6 +4,9 @@ BandwidthGoblin - macOS
 WHAT IT DOES
   Downloads one file using all your internet connections at once
   (WiFi/LAN + USB-tethered phones), so big files finish faster.
+  Also downloads YouTube videos - paste any YouTube link and pick
+  quality (best / 1080 / 720 / ... / audio); first use fetches the
+  yt-dlp engine (~30-40 MB) automatically.
 
 FIRST TIME ONLY
   1. Install python3 if missing: https://www.python.org (or: brew install python).

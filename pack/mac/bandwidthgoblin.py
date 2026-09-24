@@ -1,7 +1,7 @@
 """BandwidthGoblin: download ONE file over ALL your internet links
 (LAN + USB-tethered phones) at the same time, with resume, work-stealing,
 hot-plug and a live dashboard. Stdlib only."""
-import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64
+import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64, urllib.request, shutil, zipfile, platform
 
 # A closed stdout (pipes, pagers like `| head`, GUI shells) must never kill a
 # run mid-download. Swap print for a version that swallows write errors.
@@ -45,10 +45,19 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 43
-BETA = True  # when True, version strings carry the "(beta)" label (public status)
+BUILD = 44
+BETA = False  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
+# Build 44: first stable release. Adds YouTube downloads - paste any
+# youtube.com / youtu.be link and BandwidthGoblin fetches the proven
+# yt-dlp engine (one time, ~30-40 MB, cached in tools/) and downloads the
+# video at the best quality the video offers, or at a user-picked height
+# (2160/1440/1080/720/480) or as audio-only. The first YouTube download also
+# fetches deno (YouTube's required JS runtime) and ffmpeg (to merge full
+# quality video + audio into one file) - afterwards everything is offline.
+# New flag:  bandwidthgoblin.py --yt URL [quality]
+#
 # Build 43: merged line (old LinkBoost build 22 -> BandwidthGoblin build 42).
 # The new implementation is a strict superset of the old one, so nothing was
 # merged back except one opt-out-friendly switch: loopback (127.0.0.x) and
@@ -2133,7 +2142,7 @@ def _human(n):
         n /= 1024
     return f'{n:.1f} TB'
 
-_VALUE_FLAGS = ('queue', 'out-dir', 'referer', 'cookie', 'sha', 'header', 'limit', 'links', 'jobs', 'verify')
+_VALUE_FLAGS = ('queue', 'out-dir', 'referer', 'cookie', 'sha', 'header', 'limit', 'links', 'jobs', 'verify', 'yt')
 
 def _parse_flags(tokens):
     """Split new-style --flags out of a token list.
@@ -2322,6 +2331,9 @@ def _usage():
             '                                      batch - one URL per line in the file\n'
             '  bandwidthgoblin.py URL --out-dir D:\\dl     save straight into a folder\n'
             '  bandwidthgoblin.py --dry-run URL ...       probe links: size, type, ranges, learned speed\n'
+            '  bandwidthgoblin.py --yt URL [best|2160|1440|1080|720|480|audio]\n'
+            '                                      YouTube: paste a youtube.com / youtu.be link\n'
+            '                                      (interactive mode also auto-detects YouTube links)\n'
             '  bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash\n'
             '  bandwidthgoblin.py --history               show the last 10 completed downloads\n'
             '  bandwidthgoblin.py --resume                continue the newest saved .resume download\n'
@@ -2344,6 +2356,271 @@ def _usage():
             '  env also: MULTILINK_IFACES=0,1  MULTILINK_NODASH=1  BANDWIDTHGOBLIN_SPEEDTEST_MB=8\n'
             '  BANDWIDTHGOBLIN_KEEP_LOOPBACK=1 keeps loopback/link-local interfaces (usually\n'
             '          dropped - they are not separate physical routes; use for LAN tests only)')
+
+# ---------------------------------------------------------------------------
+# YouTube mode (build 44): paste any youtube.com / youtu.be link. BandwidthGoblin
+# fetches the proven yt-dlp engine once (cached in tools/ next to this file),
+# then downloads the video at best quality - or a user-picked height/audio.
+# ffmpeg (if present on PATH or as tools/ffmpeg) enables full-quality
+# video+audio merging; without it the best single-file format is used.
+# ---------------------------------------------------------------------------
+
+_YT_HOSTS = ('youtube.com', 'youtu.be')
+_YT_PRESET_KEYS = ('2160', '1440', '1080', '720', '480')
+_YT_FMT = {
+    '2160': 'bv*[height<=2160]+ba/b', '1440': 'bv*[height<=1440]+ba/b',
+    '1080': 'bv*[height<=1080]+ba/b', '720': 'bv*[height<=720]+ba/b',
+    '480': 'bv*[height<=480]+ba/b',
+}
+
+def is_youtube(u):
+    try:
+        h = (urllib.parse.urlparse(u or '').hostname or '').lower()
+        return any(h == x or h.endswith('.' + x) for x in _YT_HOSTS)
+    except Exception:
+        return False
+
+def _yt_bin_path():
+    try:
+        return os.path.join(_script_dir(), 'tools',
+                            'yt-dlp.exe' if os.name == 'nt' else 'yt-dlp')
+    except Exception:
+        return 'tools/yt-dlp.exe' if os.name == 'nt' else 'tools/yt-dlp'
+
+def _yt_download_url():
+    if os.name == 'nt':
+        return 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+    if sys.platform == 'darwin':
+        return 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos'
+    return 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux'
+
+def _yt_engine():
+    """Make sure the yt-dlp engine exists (fetched once, ~30-40 MB, cached in
+    tools/). A missing engine is the only time a YouTube download touches the
+    network for anything other than the video itself."""
+    if os.path.isfile(_yt_bin_path()) and os.path.getsize(_yt_bin_path()) > 1_000_000:
+        return _yt_bin_path()
+    try:
+        os.makedirs(os.path.dirname(_yt_bin_path()), exist_ok=True)
+    except Exception:
+        pass
+    tmp = _yt_bin_path() + '.part'
+    print(f'👺 first YouTube download: fetching the downloader engine ({os.path.basename(_yt_bin_path())})...', flush=True)
+    try:
+        req = urllib.request.Request(_yt_download_url(), headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=90) as r, open(tmp, 'wb') as f:
+            total = int(r.headers.get('Content-Length') or 0)
+            done = 0
+            while True:
+                b = r.read(1 << 16)
+                if not b:
+                    break
+                f.write(b)
+                done += len(b)
+                if total:
+                    print(f'\r  {done / (1 << 20):.1f} / {total / (1 << 20):.1f} MB  ({100 * done // total}%)',
+                          end='', flush=True)
+        print()
+        os.replace(tmp, _yt_bin_path())
+        if os.name != 'nt':
+            try:
+                os.chmod(_yt_bin_path(), 0o755)
+            except Exception:
+                pass
+        return _yt_bin_path()
+    except Exception as ex:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+        print(CNO(f'could not download the YouTube engine: {ex}') + CDIM(
+            '\nFix: download yt-dlp yourself from https://github.com/yt-dlp/yt-dlp/releases\n'
+            f'and save it as: {_yt_bin_path()}'))
+        return None
+
+def _yt_pick(url, headless, quality):
+    """Return (format_string, is_audio, quality_label)."""
+    q = (quality or '').strip().lower()
+    if not q and not headless:
+        q = (ask('quality? [Enter = best / 2160 / 1440 / 1080 / 720 / 480 / audio]: ') or '').strip().lower()
+    if q in ('a', 'audio', 'mp3'):
+        return 'ba/b', True, 'audio-only'
+    if q in _YT_FMT:
+        return _YT_FMT[q], False, f'up to {q}p'
+    return 'bv*+ba/b', False, 'best available'
+
+def _deno_bin():
+    return os.path.join(_script_dir(), 'tools', 'deno.exe' if os.name == 'nt' else 'deno')
+
+def _deno_download_url():
+    arch = 'aarch64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
+    if os.name == 'nt':
+        return f'https://github.com/denoland/deno/releases/latest/download/deno-{arch}-pc-windows-msvc.zip'
+    if sys.platform == 'darwin':
+        return f'https://github.com/denoland/deno/releases/latest/download/deno-{arch}-apple-darwin.zip'
+    return f'https://github.com/denoland/deno/releases/latest/download/deno-{arch}-unknown-linux-gnu.zip'
+
+def _deno_engine():
+    """YouTube extracts need a JavaScript runtime nowadays (yt-dlp deprecation
+    of JS-free extraction). deno is a single binary - fetched once into tools/."""
+    b = _deno_bin()
+    if os.path.isfile(b) and os.path.getsize(b) > 5_000_000:
+        return b
+    try:
+        os.makedirs(os.path.dirname(b), exist_ok=True)
+    except Exception:
+        pass
+    z = b + '.zip'
+    print(f'👺 first YouTube download: fetching the JS runtime engine ({os.path.basename(b)}) - one time only...', flush=True)
+    try:
+        req = urllib.request.Request(_deno_download_url(), headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=120) as r, open(z, 'wb') as f:
+            total = int(r.headers.get('Content-Length') or 0)
+            done = 0
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f'\r  {done / (1 << 20):.1f} / {total / (1 << 20):.1f} MB  ({100 * done // total}%)',
+                          end='', flush=True)
+        print('  extracting...')
+        with zipfile.ZipFile(z) as zf:
+            hit = [n for n in zf.namelist() if n.endswith('deno.exe' if os.name == 'nt' else 'deno')]
+            if not hit:
+                raise RuntimeError('deno not found in archive')
+            with zf.open(hit[0]) as src, open(b, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+        try:
+            os.remove(z)
+        except Exception:
+            pass
+        if os.name != 'nt':
+            try:
+                os.chmod(b, 0o755)
+            except Exception:
+                pass
+        return b
+    except Exception as ex:
+        try:
+            if os.path.exists(z):
+                os.remove(z)
+        except Exception:
+            pass
+        print(CDIM(f'(JS runtime unavailable: {ex})'))
+        return None
+
+def _yt_ffmpeg():
+    """Locate ffmpeg (needed to merge full-quality video + audio into one
+    file). Prefers an existing install on PATH; otherwise fetches the official
+    static Windows build (gyan.dev) into tools/ once. On macOS/Linux without a
+    system ffmpeg it returns None (best single-file fallback is used)."""
+    try:
+        w = shutil.which('ffmpeg')
+        if w:
+            return w
+    except Exception:
+        pass
+    cand = os.path.join(_script_dir(), 'tools', 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
+    if os.path.isfile(cand) and os.path.getsize(cand) > 5_000_000:
+        return cand
+    if os.name != 'nt':
+        return None  # mac/linux - point users at brew/apt instead of bundling
+    try:
+        os.makedirs(os.path.dirname(cand), exist_ok=True)
+    except Exception:
+        pass
+    z = cand + '.zip'
+    print('👺 first YouTube download: fetching ffmpeg (merges 1080p/4K video + audio) - one time only...', flush=True)
+    try:
+        req = urllib.request.Request('https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
+                                     headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=120) as r, open(z, 'wb') as f:
+            total = int(r.headers.get('Content-Length') or 0)
+            done = 0
+            while True:
+                chunk = r.read(1 << 16)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f'\r  {done / (1 << 20):.1f} / {total / (1 << 20):.1f} MB  ({100 * done // total}%)',
+                          end='', flush=True)
+        print('  extracting ffmpeg...')
+        with zipfile.ZipFile(z) as zf:
+            hit = [n for n in zf.namelist() if n.endswith('/ffmpeg.exe')]
+            if not hit:
+                raise RuntimeError('ffmpeg.exe not found in archive')
+            with zf.open(hit[0]) as src, open(cand, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+        try:
+            os.remove(z)
+        except Exception:
+            pass
+        return cand
+    except Exception as ex:
+        try:
+            if os.path.exists(z):
+                os.remove(z)
+        except Exception:
+            pass
+        print(CDIM(f'(ffmpeg unavailable: {ex})'))
+        return None
+
+def _yt_run(url, headless, fl, quality=None):
+    """Download a single YouTube link. Returns True on success."""
+    if not is_youtube(url):
+        return False
+    exe = _yt_engine()
+    if not exe:
+        return False
+    fmt, is_audio, qlabel = _yt_pick(url, headless, quality)
+    if headless:
+        od = (fl.get('out-dir') or [''])[0] or load_lastdir() or '.'
+    else:
+        sug = load_lastdir() or '.'
+        v = ask(f'save folder? [Enter = {sug}]: ')
+        od = v.strip() or sug
+        if not od:
+            od = '.'
+    try:
+        os.makedirs(od, exist_ok=True)
+        save_lastdir(od)
+    except Exception:
+        pass
+    ff = _yt_ffmpeg()
+    if not ff and (not is_audio and ('+' in fmt)):
+        print(CYLW('no ffmpeg available - taking the best single-file format (often capped at ~720p).\n'
+                   'On Windows the tool fetches ffmpeg automatically on the next run; on macOS/Linux\n'
+                   'install it once with:  brew install ffmpeg   (or apt install ffmpeg)'))
+        fmt = 'b'
+    outtmpl = os.path.join(od, '%(title)s [%(id)s].%(ext)s')
+    cmd = [exe, '-f', fmt, '--no-playlist', '--newline', '-o', outtmpl, url]
+    deno = _deno_engine()
+    if deno:
+        cmd += ['--js-runtimes', f'deno:{deno}']
+    if ff:
+        cmd += ['--ffmpeg-location', ff]
+    if is_audio:
+        if ff:
+            cmd += ['-x', '--audio-format', 'mp3']
+        else:
+            print(CYLW('no ffmpeg - keeping the best audio stream as-is instead of converting to mp3.'))
+    print(f'👺 YouTube download - {qlabel}' + CDIM(f'  |  {redact(url)}') + f'\n   saving to: {od}', flush=True)
+    try:
+        p = subprocess.run(cmd)
+        if p.returncode != 0:
+            print(CNO('YouTube download failed.') + CDIM(
+                '\nIf the error mentions "Sign in to confirm you are not a bot", the video is '
+                'region/age-locked - try a different video, or watch it once in a browser first.'))
+        return p.returncode == 0
+    except Exception as ex:
+        print(CNO(f'YouTube download failed: {ex}'))
+        return False
 
 def _subrun(url, out, rest):
     """Download ONE queue entry in its own python process (used by --jobs > 1).
@@ -2591,6 +2868,15 @@ def main():
         sys.exit(_selftest())
     if fl.get('verify'):
         sys.exit(_verify_cmd((fl.get('verify') or [''])[0]))
+    if fl.get('yt'):
+        tgt = (fl.get('yt') or [''])[0]
+        u = tgt if is_link(tgt) else next((a for a in args if is_link(a)), '')
+        qq = next((a for a in args if str(a).lower() in ('best', 'audio') + _YT_PRESET_KEYS), '')
+        if not u or not is_youtube(u):
+            print(CNO('--yt needs a YouTube URL, e.g.  bandwidthgoblin.py --yt https://youtu.be/XXXX 1080')
+                  + CDIM('\n' + _usage()))
+            sys.exit(1)
+        sys.exit(0 if _yt_run(u, True, fl, qq or None) else 1)
     que = (fl.get('queue') or [''])[0]
     qitems = _read_queue(que) if que else []
     qurls = [u for u, _o in qitems]
@@ -2650,6 +2936,20 @@ def main():
         for t in targets:
             _probe_print(t)
         return
+    if len(args) >= 1 and is_link(args[0]) and is_youtube(args[0]):
+        # YouTube one-shot:  YTURL | YTURL 1080 | YTURL D:\save-folder.
+        # yt-dlp picks its own title-based filename, so the second token is a
+        # quality (720/1080/.../audio/best) or a save folder, not a file name.
+        qq = ''
+        if len(args) >= 2 and args[1].lower() in ('best', 'audio') + _YT_PRESET_KEYS:
+            qq = args[1].lower()
+        elif len(args) >= 2 and not is_link(args[1]):
+            try:
+                os.makedirs(args[1], exist_ok=True)
+                save_lastdir(args[1])
+            except Exception:
+                pass
+        sys.exit(0 if _yt_run(args[0], True, fl, qq or None) else 1)
     if len(args) >= 2 and is_link(args[0]) and not is_link(args[1]):
         # One-shot form: URL then output FILE. If the second token is itself a
         # link (e.g. two --out-dir URLs), that is a batch, not an output name.
@@ -2703,6 +3003,27 @@ def main():
                 print(CDIM('bye.'))
                 return
             url, pending = urls[0], urls[1:] + pending
+        if is_youtube(url):
+            ok = _yt_run(url, headless, fl)
+            if headless:
+                if not ok:
+                    _hfails += 1
+                if pending:
+                    continue
+                break
+            try:
+                tty = bool(sys.stdin.isatty())
+            except Exception:
+                tty = False
+            if not tty:
+                return
+            nxt = ask('another? [paste link / y / N]: ')
+            if is_link(nxt):
+                pending = [nxt]
+                continue
+            if nxt.lower() in ('y', 'yes'):
+                continue
+            return
         if headless:
             od = (fl.get('out-dir') or [''])[0] or load_lastdir() or '.'
             try:
