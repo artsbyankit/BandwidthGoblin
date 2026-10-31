@@ -5,6 +5,7 @@ logs/
 perf.jsonl
 history.jsonl
 .lastdir
+.uimode
 *.resume
 *.resume.tmp
 *.progress
@@ -17,6 +18,7 @@ pack/*/logs/
 pack/*/perf.jsonl
 pack/*/history.jsonl
 pack/*/.lastdir
+pack/*/.uimode
 pack/*/__pycache__/
 pack/*/*.pyc
 

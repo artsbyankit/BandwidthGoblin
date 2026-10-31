@@ -1,10 +1,11 @@
 """BandwidthGoblin: download ONE file over ALL your internet links
 (LAN + USB-tethered phones) at the same time, with resume, work-stealing,
 hot-plug and a live dashboard. Stdlib only."""
-import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64, urllib.request, shutil, zipfile, platform, glob
+import http.client, ssl, sys, os, re, subprocess, urllib.parse, concurrent.futures, time, threading, socket, collections, json, random, hashlib, base64, urllib.request, shutil, zipfile, platform, glob, atexit, errno, unicodedata, email.message
 
 # A closed stdout (pipes, pagers like `| head`, GUI shells) must never kill a
 # run mid-download. Swap print for a version that swallows write errors.
+import queue
 import builtins as _b
 _orig_print = _b.print
 def _safe_print(*a, **kw):
@@ -45,10 +46,15 @@ except Exception:
     pass
 
 VERSION = '2.0'
-BUILD = 47
+BUILD = 48
 BETA = False  # when True, version strings carry the "(beta)" label (public status)
 _VER_LABEL = ' (beta)' if BETA else ''
 
+# Build 48: two views - a calm simple screen by default and a btop-style
+# advanced view (A switches, the choice is remembered). Stop keeps part-finished
+# chunks, one-connection downloads are chunked and resumable, existing files
+# are never overwritten, and a pile of reliability fixes (see CHANGELOG).
+#
 # Build 45: YouTube downloads now get the full BandwidthGoblin treatment -
 # the raw DASH streams are pulled straight through the multi-link engine
 # (split over every connection, resumable, verified) and merged locally with
@@ -82,6 +88,7 @@ _VER_LABEL = ' (beta)' if BETA else ''
 
 SOCK_TIMEOUT = 20   # real socket timeout (sec); enforced via sock.settimeout
 STALL_SECS = 25     # abort a chunk Range if zero bytes arrive for this long
+READ_BLOCK = 256 * 1024   # most bytes taken from a socket per read
 
 DSCP_TOS = 0xB8  # EF = highest user priority tag; routers/ISPs may ignore
 
@@ -126,19 +133,124 @@ def _throttle(n):
         else:
             THR_CAP -= n
 
-def _toggle_pause():
+def _set_paused(v):
     global PAUSED
-    PAUSED = not PAUSED
-    if PAUSED:
-        log('PAUSED - press P/R to resume, ESC to stop')
-    else:
-        log('RESUMED - downloads continuing')
+    if PAUSED != v:
+        PAUSED = v
+        log('PAUSED - press P to continue, ESC to stop' if v else 'RESUMED - downloads continuing')
 
-def _toggle_help():
-    """[H] key: show the in-dashboard feature help overlay for a few seconds."""
-    global HELP_SHOW, HELP_UNTIL
-    HELP_SHOW = not HELP_SHOW
-    HELP_UNTIL = time.time() + 6
+def _tui_msg(m):
+    _TUI['msg'] = m
+    _TUI['msg_until'] = time.time() + 4
+
+def _set_mode(m):
+    global UI_MODE
+    UI_MODE = m
+    try:
+        with open(os.path.join(_script_dir(), '.uimode'), 'w') as f:
+            f.write(m)
+    except Exception:
+        pass
+
+def _load_mode():
+    global UI_MODE
+    try:
+        with open(os.path.join(_script_dir(), '.uimode')) as f:
+            if f.read().strip() == 'advanced':
+                UI_MODE = 'advanced'
+    except Exception:
+        pass
+
+def _request_stop(reason):
+    global STOP, STOP_REASON, STOP_USER
+    STOP_REASON = reason
+    STOP_USER = True
+    STOP = True
+
+def _toggle_rest(ip):
+    """[x]: rest one connection (its work moves to the others) or wake it again."""
+    if ip is None:
+        return
+    if ip in BENCHED:
+        BENCHED.discard(ip)
+        _tui_msg(f'{link_label(ip)} is back in action')
+        return
+    with G_LOCK:
+        others = [u for u in _TUI['use'] if u != ip and u not in BENCHED]
+    if not others:
+        _tui_msg('that is the last working connection - keeping it on')
+        return
+    BENCHED.add(ip)
+    if CUR_Q is not None:
+        _requeue_link(ip, CUR_Q)
+    _close_ip_socks(ip)
+    _tui_msg(f'{link_label(ip)} is resting - press x to wake it')
+
+def _handle_key(k):
+    """One key press. A failure here must never take the keyboard down with it."""
+    try:
+        _do_key(k)
+    except Exception as ex:
+        log(f'key {k!r} failed: {ex}')
+
+def _do_key(k):
+    global SPEEDLIMIT
+    k = k.lower() if len(k) == 1 else k
+    if k in ('esc', 'q'):
+        _request_stop('ESC')
+    elif k == 'ctrl-c':
+        _request_stop('CTRL+C')
+    elif k == 'p':
+        _set_paused(not PAUSED)
+    elif k == 'r':
+        _set_paused(False)
+    elif k in ('h', '?'):
+        _TUI['help'] = not _TUI['help']
+        _TUI['help_until'] = time.time() + 20
+    elif k == 'a':
+        _set_mode('simple' if UI_MODE == 'advanced' else 'advanced')
+    elif k == '-':
+        # Start from the live speed unless it is near zero (e.g. while paused),
+        # and never go so low that the cap itself looks like a dead download.
+        SPEEDLIMIT = max(100e3, (SPEEDLIMIT or (_TUI['speed'] if _TUI['speed'] > 100e3 else 8e6)) * 0.75)
+        log(f'speed cap: {SPEEDLIMIT/1e6:.1f} MB/s')
+    elif k in ('+', '='):
+        if SPEEDLIMIT:
+            SPEEDLIMIT = SPEEDLIMIT / 0.75
+            log(f'speed cap: {SPEEDLIMIT/1e6:.1f} MB/s')
+    elif k == '0':
+        SPEEDLIMIT = 0.0
+        log('speed cap removed')
+    elif k == 'up':
+        _TUI['sel'] = max(0, _TUI['sel'] - 1)
+    elif k == 'down':
+        _TUI['sel'] += 1
+    elif k == 'x':
+        _toggle_rest(_TUI['sel_ip'])
+    elif k == 's':
+        _TUI['sort'] = (_TUI['sort'] + 1) % 3
+    elif k in ('1', '2', '3', '4'):
+        _TUI['panels'] ^= {{'1': 'net', '2': 'links', '3': 'chunks', '4': 'log'}[k]}
+
+def _parse_keys(text):
+    """Terminal input -> key names. Arrow keys arrive as ESC [ A: they must never
+    be mistaken for a lone ESC, which means stop."""
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c == '\x1b':
+            m = re.match(r'\x1b[\[O][0-9;]*[A-Za-z~]', text[i:])
+            if m:
+                out.extend({'A': ['up'], 'B': ['down']}.get(m.group(0)[-1], []))
+                i += len(m.group(0))
+                continue
+            out.append('esc')
+        elif c == '\x03':
+            out.append('ctrl-c')
+        else:
+            out.append(c)
+        i += 1
+    return out
 
 def _parse_ifconfig(out):
     ips, current = [], None
@@ -150,17 +262,25 @@ def _parse_ifconfig(out):
             ips.append((current or 'net', m.group(1)))
     return ips
 
+def _parse_ipconfig(out):
+    # Matches on "IPv4", not "IPv4 Address": the label is translated on
+    # non-English Windows (IPv4-Adresse, Adresse IPv4, Direccion IPv4...).
+    ips, current = [], None
+    for line in out.splitlines():
+        if line and not line[0].isspace() and line.rstrip().endswith(':'):
+            current = line.strip()
+        m = re.search(r'IPv4[^:]*:\s*(\d+\.\d+\.\d+\.\d+)', line)
+        if m and not m.group(1).startswith('127.'):
+            ips.append((current or 'windows', m.group(1)))
+    return ips
+
 def local_ips():
     ips = []
     try:
         if os.name == 'nt':
-            out = subprocess.check_output('ipconfig', text=True, errors='ignore')
-            current = None
-            for line in out.splitlines():
-                if 'adapter' in line and ':' in line: current = line.strip()
-                m = re.search(r'IPv4 Address[.\s]+:\s*([\d.]+)', line)
-                if m and not m.group(1).startswith('127.'):
-                    ips.append((current or 'windows', m.group(1)))
+            ips = _parse_ipconfig(subprocess.check_output(
+                'ipconfig', text=True, errors='ignore',
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
         elif sys.platform == 'darwin':
             out = subprocess.check_output(['ifconfig'], text=True, errors='ignore')
             ips = _parse_ifconfig(out)
@@ -492,55 +612,103 @@ def _same_val(a, b):
     na, nb = _norm(a), _norm(b)
     return bool(na) and na == nb
 
+def _disposition_name(v):
+    """Content-Disposition header -> safe file name ('' when it names none)."""
+    try:
+        m = email.message.Message()
+        m['Content-Disposition'] = v or ''
+        return _safe_filename(m.get_filename() or '')
+    except Exception:
+        return ''
+
+def _get_probe(url):
+    """HEAD was refused (S3-style signed links and many CDNs do that for GET-only
+    URLs): learn the same facts from a one-byte GET. Returns (status, url, size,
+    accept_ranges, meta)."""
+    for _ in range(4):
+        conn, path = open_conn(url)
+        try:
+            conn.request('GET', path, headers={'Range': 'bytes=0-0', 'User-Agent': UA, 'Accept': '*/*',
+                                               'Accept-Encoding': 'identity', **EXTRA_HEADERS})
+            r = conn.getresponse()
+            if r.status in (301, 302, 303, 307, 308) and r.getheader('Location'):
+                url = urllib.parse.urljoin(url, r.getheader('Location'))
+                continue
+            size, ar = 0, r.getheader('Accept-Ranges')
+            if r.status == 206:
+                m = re.search(r'/(\d+)\s*$', r.getheader('Content-Range') or '')
+                size, ar = int(m.group(1)) if m else 0, 'bytes'
+            elif r.status == 200:
+                try:
+                    size = int(r.getheader('Content-Length') or 0)
+                except (ValueError, TypeError):
+                    size = 0
+            return r.status, url, size, ar, _resp_meta(r)
+        finally:
+            try: conn.close()
+            except Exception: pass
+    raise RuntimeError('too many redirects')
+
+def _resp_meta(r):
+    return {'etag': r.getheader('ETag') or '',
+            'lastmod': r.getheader('Last-Modified') or '',
+            'ctype': (r.getheader('Content-Type') or '').split(';')[0].strip().lower(),
+            'enc': (r.getheader('Content-Encoding') or '').strip().lower(),
+            'name': _disposition_name(r.getheader('Content-Disposition'))}
+
 def head(url):
     # Build 47 harden: googlevideo/CDN signed URLs intermittently 403/404/410
     # from one edge while the SAME url works moments later (or after yt-dlp
     # re-extracts fresh signatures). A transient first-request rejection used
     # to abort the multi-link engine on the spot and silently downgrade the run
     # to single-connection yt-dlp (no dashboard). Retry with backoff instead.
-    hops, fail = 0, 0
+    # Build 48: any non-2xx HEAD is only a refused HEAD - ask with a GET before
+    # believing it (its Content-Length is the error page, not the file), and a
+    # network blip on the first request gets the same retries.
+    hops, fail, neterr = 0, 0, 0
     while True:
         conn, path = open_conn(url)
-        conn.request('HEAD', path, headers={'User-Agent': UA, 'Accept': '*/*', 'Connection': 'keep-alive', **EXTRA_HEADERS})
-        r = conn.getresponse(); r.read()
-        if r.status in (301, 302, 303, 307, 308) and r.getheader('Location'):
+        try:
+            try:
+                conn.request('HEAD', path, headers={'User-Agent': UA, 'Accept': '*/*', 'Connection': 'keep-alive', **EXTRA_HEADERS})
+                r = conn.getresponse(); r.read()
+            except (OSError, http.client.HTTPException):
+                neterr += 1
+                if neterr >= 3:
+                    raise
+                time.sleep(0.5 * neterr)
+                continue
+            if r.status in (301, 302, 303, 307, 308) and r.getheader('Location'):
+                hops += 1
+                if hops >= 6:
+                    raise RuntimeError('too many redirects')
+                url = urllib.parse.urljoin(url, r.getheader('Location')); continue
+            if not 200 <= r.status < 300:
+                st, u2, size, ar, meta = _get_probe(url)
+                if st in (200, 206):
+                    return u2, size, ar, meta
+                fail += 1
+                if fail < 4:
+                    time.sleep(0.4 * fail)
+                    continue
+                raise RuntimeError(f'HTTP {st} for {redact(url)} (after {fail} attempts)')
+            try:
+                size = int(r.getheader('Content-Length') or 0)
+            except (ValueError, TypeError):
+                size = 0   # malformed Content-Length - treat as unknown size
+            ar = r.getheader('Accept-Ranges')
+            meta = _resp_meta(r)
+            if not size and ar and 'bytes' in ar.lower():
+                try:
+                    st, _u, s2, _a, m2 = _get_probe(url)
+                    if st == 206 and m2.get('enc') in ('', 'identity'):
+                        size = s2
+                except Exception:
+                    pass
+            return url, size, ar, meta
+        finally:
             try: conn.close()
             except Exception: pass
-            hops += 1
-            if hops >= 4:
-                raise RuntimeError('too many redirects')
-            url = urllib.parse.urljoin(url, r.getheader('Location')); continue
-        if r.status in (400, 401, 403, 404, 410, 429) or r.status >= 500:
-            fail += 1
-            if fail < 4:
-                time.sleep(0.4 * fail)
-                try: conn.close()
-                except Exception: pass
-                continue
-            raise RuntimeError(f'HTTP {r.status} for {redact(url)} (after {fail} attempts)')
-        try:
-            size = int(r.getheader('Content-Length') or 0)
-        except (ValueError, TypeError):
-            size = 0   # malformed Content-Length - treat as unknown size
-        ar = r.getheader('Accept-Ranges')
-        meta = {'etag': r.getheader('ETag') or '',
-                'lastmod': r.getheader('Last-Modified') or '',
-                'ctype': (r.getheader('Content-Type') or '').split(';')[0].strip().lower(),
-                'enc': (r.getheader('Content-Encoding') or '').strip().lower()}
-        if not size and ar and 'bytes' in ar.lower():
-            try:
-                conn2, path2 = open_conn(url)
-                conn2.request('GET', path2, headers={'Range': 'bytes=0-0', 'User-Agent': UA,
-                                                    'Accept-Encoding': 'identity', **EXTRA_HEADERS})
-                r2 = conn2.getresponse()
-                cr = r2.getheader('Content-Range') or ''
-                enc2 = (r2.getheader('Content-Encoding') or '').strip().lower()
-                r2.read(); conn2.close()
-                m = re.search(r'/(\d+)\s*$', cr)
-                if m and enc2 in ('', 'identity'): size = int(m.group(1))
-            except Exception:
-                pass
-        return url, size, ar, meta
 
 def range_probe(url, ip=None, size=0):
     """Prove the server honours a REAL mid-file Range before multi-link mode.
@@ -602,7 +770,7 @@ def range_probe(url, ip=None, size=0):
 LOGFILE = None
 LOGLOCK = threading.Lock()
 T0 = 0
-RING = collections.deque(maxlen=8)
+RING = collections.deque(maxlen=60)
 LINK_DONE = {}
 LINK_LOCK = threading.Lock()
 LINK_SPEED = {}
@@ -614,7 +782,16 @@ LINK_THREADS = {}
 DASH_ON = False
 DASH_MODE = 'off'
 DASH_EMA = {}
-SPARK = collections.deque(maxlen=90)
+SPARK = collections.deque(maxlen=1200)
+LINK_HIST = {}                                 # per-link speed history for the advanced view
+BENCHED = set()                                # links the user rested with [x]
+POST_DASH = []                                 # messages held back until the full-screen view closes
+CUR_Q = None                                   # the running download's work queue
+UI_MODE = 'simple'                             # 'simple' or 'advanced' ([A] switches, remembered in .uimode)
+OVERWRITE = False                              # --overwrite: replace an existing file instead of keeping both
+_RENAMED = {}                                  # requested path -> the name we actually saved under
+_TUI = {'sel': 0, 'sel_ip': None, 'sort': 0, 'help': False, 'help_until': 0.0, 'msg': '', 'msg_until': 0.0,
+        'panels': {'net', 'links', 'chunks', 'log'}, 'speed': 0.0, 'use': []}
 STOP = False
 STOP_REASON = 'ESC'
 STOP_USER = False                            # human/watchdog stop requested (ESC/Ctrl+C/stall) - never auto-continue
@@ -629,8 +806,6 @@ EXPECT_SHA = ''                                # optional sha256 from BANDWIDTHG
 OPEN_AFTER = None                              # None=open folder only in tty; True=always; False=never
 EXTRA_HEADERS = {}                             # extra request headers (referer/cookie/custom)
 PAUSED = False                                 # soft pause (P key): keep sockets, stall workers/steals
-HELP_SHOW = False                              # [H] key toggles the in-dashboard help overlay
-HELP_UNTIL = 0.0                               # help overlay auto-hides after this timestamp
 _INTRO_SHOWN = False                           # one-time "how to drive this" intro at the first prompt
 QUIET = False                                  # --quiet: stdout chatter suppressed, milestones kept
 NO_LOG = False                                 # --no-log: skip per-run disk logs
@@ -772,6 +947,55 @@ ACTIVE = {}
 CHUNK_TRIES = {}
 CHUNK_TRIES_LOCK = threading.Lock()
 
+_BGQ = queue.SimpleQueue()
+_BG_THREAD = None
+
+def _bg_writer():
+    """Does all log/stats file writing, off the download threads, so a slow or
+    busy drive can never hold up a download. A failed write (antivirus, full disk)
+    costs one log line here, never a thread."""
+    while True:
+        items = [_BGQ.get()]
+        time.sleep(0.2)                     # let lines pile up: fewer file opens
+        while not _BGQ.empty():
+            items.append(_BGQ.get())
+        texts = {}
+        for it in items:
+            if isinstance(it, tuple):
+                texts.setdefault(it[0], []).append(it[1])
+        for path, parts in texts.items():
+            try:
+                with open(path, 'a', errors='replace') as lf:
+                    lf.write(''.join(parts))
+            except Exception:
+                pass
+        for it in items:
+            try:
+                if isinstance(it, threading.Event):
+                    it.set()
+                elif callable(it):
+                    it()
+            except Exception:
+                pass
+
+def _bg_put(item):
+    global _BG_THREAD
+    if _BG_THREAD is None:
+        with LOGLOCK:
+            if _BG_THREAD is None:
+                _BG_THREAD = threading.Thread(target=_bg_writer, daemon=True, name='bgwrite')
+                _BG_THREAD.start()
+    _BGQ.put(item)
+
+def _bg_flush(timeout=3):
+    """Wait for queued lines to reach the disk (called on the way out)."""
+    if _BG_THREAD is not None:
+        ev = threading.Event()
+        _BGQ.put(ev)
+        ev.wait(timeout)
+
+atexit.register(_bg_flush)
+
 def log(msg):
     line = f'{time.strftime("%H:%M:%S")} {msg}'
     RING.append(line)
@@ -779,14 +1003,13 @@ def log(msg):
         out_line = line
         if 'TOTAL:' in msg:
             out_line = re.sub(r'([\d.]+ MB/s)', lambda m: CYLW(m.group(1)), line)
-        if not QUIET or any(k in msg for k in ('TOTAL:', 'all chunks done', 'resume saved',
+        if not (QUIET or (UI_MODE == 'simple' and _tty())) or any(k in msg for k in ('TOTAL:', 'all chunks done', 'resume saved',
                                                 'DOWNLOAD FAILED', 'STOPPED', 'finalizing:',
                                                 'auto-restarting', 'single-stream retry',
                                                 'WATCHDOG', 'PAUSED', 'RESUMED', 'FAILED')):
             print(out_line, flush=True)
     if LOGFILE and not NO_LOG:
-        with LOGLOCK:
-            with open(LOGFILE, 'a', errors='replace') as lf: lf.write(_ANSI.sub('', line) + '\n')
+        _bg_put((LOGFILE, _ANSI.sub('', line) + '\n'))
 
 def _prune_logs(d, keep=20):
     try:
@@ -811,6 +1034,7 @@ def get_url_for(ip):
 
 def ip_ok(ip):
     if ip is None: return True
+    if ip in BENCHED: return False
     with IP_LOCK:
         st = IP_STATE.get(ip)
         if st and st.get('parked_until', 0) > time.time():
@@ -838,26 +1062,25 @@ def ip_failed(ip):
             log(f'link {ip} parked {cool}s ({"gone" if not present else "failing"})')
 
 def _esc_listener():
-    global STOP, STOP_REASON, STOP_USER
     try:
         if os.name == 'nt':
             import msvcrt
             while not STOP and not RUN_DONE.is_set():
                 time.sleep(0.05)
-                try:
-                    if msvcrt.kbhit():
-                        c = msvcrt.getch()
-                        if c == b'\x1b':
-                            STOP = True
-                            STOP_REASON = 'ESC'
-                            STOP_USER = True
-                            return
-                        if c in (b'p', b'P', b'r', b'R') and not RUN_DONE.is_set():
-                            _toggle_pause()
-                        if c in (b'h', b'H'):
-                            _toggle_help()
-                except Exception:
-                    return
+                while msvcrt.kbhit():
+                    c = msvcrt.getwch()
+                    if c in ('\x00', '\xe0'):
+                        # Special keys come as two codes. The second looks like a
+                        # letter (down arrow = 'P'), so it must be consumed here.
+                        _handle_key({'H': 'up', 'P': 'down'}.get(msvcrt.getwch(), 'none'))
+                    elif c == '\x1b':
+                        _handle_key('esc')
+                    elif c == '\x03':
+                        _handle_key('ctrl-c')
+                    else:
+                        _handle_key(c)
+            while msvcrt.kbhit():      # leftovers must not type into the next prompt
+                msvcrt.getwch()
         else:
             import termios, tty, select
             if not sys.stdin.isatty():
@@ -865,22 +1088,18 @@ def _esc_listener():
             fd = sys.stdin.fileno()
             old = termios.tcgetattr(fd)
             try:
-                tty.setraw(fd)
+                # cbreak, not raw: raw mode also kills Ctrl+C and output newlines.
+                tty.setcbreak(fd)
                 while not STOP and not RUN_DONE.is_set():
                     r, _, _ = select.select([fd], [], [], 0.1)
                     if r:
-                        c = sys.stdin.read(1)
-                        if c == '\x1b':
-                            STOP = True
-                            STOP_REASON = 'ESC'
-                            STOP_USER = True
-                            return
-                        if c.lower() in ('p', 'r') and not RUN_DONE.is_set():
-                            _toggle_pause()
-                        if c.lower() == 'h':
-                            _toggle_help()
+                        data = os.read(fd, 64)
+                        if data == b'\x1b' and select.select([fd], [], [], 0.03)[0]:
+                            data += os.read(fd, 64)   # a split arrow key, not ESC
+                        for k in _parse_keys(data.decode('utf-8', 'ignore')):
+                            _handle_key(k)
             finally:
-                try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                try: termios.tcsetattr(fd, termios.TCSAFLUSH, old)
                 except Exception: pass
     except Exception:
         return
@@ -927,6 +1146,29 @@ def refresh_final(force=False):
         log('refresh: url unchanged')
         return u
 
+_FD_LOCAL = threading.local()
+
+def _out_fd(out):
+    """This worker's handle on the output file, kept for the whole run. Reopening
+    it per chunk froze every writer for ~8s after the first chunks closed on Windows
+    (measured; most likely antivirus rescanning the file on each close)."""
+    c = getattr(_FD_LOCAL, 'fd', None)
+    if c and c[0] == out:
+        return c[1]
+    _close_out_fd()
+    # NB: os.open defaults to TEXT mode on Windows (translates \n -> \r\n
+    # and corrupts binaries). O_BINARY is required. getattr for POSIX.
+    fd = os.open(out, os.O_RDWR | os.O_CREAT | getattr(os, 'O_BINARY', 0))
+    _FD_LOCAL.fd = (out, fd)
+    return fd
+
+def _close_out_fd():
+    c = getattr(_FD_LOCAL, 'fd', None)
+    _FD_LOCAL.fd = None
+    if c:
+        try: os.close(c[1])
+        except OSError: pass
+
 def fetch_direct(idx, s, e, ip, out, tok):
     global TOTAL_DONE, G429_N, G429_COOLDOWN, LAST_PROGRESS, THR_LAST
     global VALIDATOR_BROKEN
@@ -936,10 +1178,7 @@ def fetch_direct(idx, s, e, ip, out, tok):
     t0, last = time.time(), time.time()
     retries = 0
     _stalefresh = 0  # silent reconnects for server-closed keep-alives (build 36)
-    # NB: os.open defaults to TEXT mode on Windows (translates \n -> \r\n
-    # and corrupts binaries). O_BINARY is required. getattr for POSIX.
-    _BIN = getattr(os, 'O_BINARY', 0)
-    fd = os.open(out, os.O_RDWR | os.O_CREAT | _BIN)
+    fd = _out_fd(out)
     try:
         while (done < total) if bounded else True:
             if STOP:
@@ -960,7 +1199,7 @@ def fetch_direct(idx, s, e, ip, out, tok):
                 if bounded:
                     if RANGE_VERIFIED and not VALIDATOR_BROKEN:
                         if V_ETAG and not V_ETAG.startswith('W/'):
-                            _ifrange = f"'{V_ETAG}'"
+                            _ifrange = V_ETAG
                         elif V_LM:
                             _ifrange = V_LM
                     _rh = {'Range': f'bytes={s+done}-{e}',
@@ -1093,6 +1332,7 @@ def fetch_direct(idx, s, e, ip, out, tok):
                         with THR_LOCK:
                             THR_LAST = time.time()   # paused time must not earn throttle tokens
                         LAST_PROGRESS = time.time()   # ...nor trip the stall watchdog either (audit M2: a >3min [P] pause used to hard-stop the run)
+                        win_t, win_n = last_recv, 0   # ...nor look like a trickling server on the way out
                         continue
                     with CHUNK_LOCK:
                         if bounded and CHUNK_OWNER.get(idx) != tok:
@@ -1108,7 +1348,10 @@ def fetch_direct(idx, s, e, ip, out, tok):
                         drop_conn(url, ip)
                         raise RuntimeError(f'trickle stall ({win_n}B in {STALL_SECS}s), release for steal')
                     try:
-                        blk = r.read(64 * 1024)
+                        # read1: take whatever has arrived. On fast links that is a big
+                        # block (less Python per byte); on slow ones a small block now
+                        # rather than a wait for 64 KB, so screen and stall checks stay live.
+                        blk = r.read1(max(16384, min(READ_BLOCK, int(SPEEDLIMIT / 4))) if SPEEDLIMIT else READ_BLOCK)
                     except socket.timeout as ex:
                         drop_conn(url, ip)
                         raise RuntimeError(f'read timeout after {SOCK_TIMEOUT}s idle ({ex})')
@@ -1125,9 +1368,14 @@ def fetch_direct(idx, s, e, ip, out, tok):
                         resp_skip = 0
                     os.lseek(fd, s + done, os.SEEK_SET)
                     mv = memoryview(blk)
-                    while mv:
-                        n = os.write(fd, mv)
-                        mv = mv[n:]
+                    try:
+                        while mv:
+                            n = os.write(fd, mv)
+                            mv = mv[n:]
+                    except OSError as ex:
+                        if ex.errno in (errno.ENOSPC, errno.EDQUOT if hasattr(errno, 'EDQUOT') else errno.ENOSPC):
+                            raise _Fatal('the disk is full')   # retrying cannot help
+                        raise
                     done += len(blk)
                     _throttle(len(blk))
                     LAST_PROGRESS = time.time()
@@ -1175,7 +1423,6 @@ def fetch_direct(idx, s, e, ip, out, tok):
                 if retries > 4: raise RuntimeError(f'chunk{idx} via {ip} gave up after {retries}, release for steal ({done/1e6:.1f}/{total/1e6:.1f}MB)')
                 _sleep_stop(1 + retries * 0.3)
     finally:
-        os.close(fd)
         with SOCK_LOCK:
             SOCK_REG.pop(tok, None)
     el = time.time() - t0
@@ -1197,12 +1444,16 @@ def fetch_direct(idx, s, e, ip, out, tok):
     return idx
 
 def watchdog():
-    global STOP, STOP_REASON
+    global STOP, STOP_REASON, STOP_USER, LAST_PROGRESS
+    rid = G_RUNID
     while True:
         time.sleep(5)
-        if STOP or RUN_DONE.is_set():
+        if STOP or RUN_DONE.is_set() or G_RUNID != rid:
             return
         now = time.time()
+        if PAUSED:
+            LAST_PROGRESS = now   # workers idling between chunks while paused are not a stall
+            continue
         with CHUNK_LOCK:
             if NCH > 0 and CHUNKS_DONE >= NCH:
                 return
@@ -1216,8 +1467,9 @@ def watchdog():
 
 def monitor():
     last_t = time.time()
+    rid = G_RUNID
     while True:
-        if STOP or RUN_DONE.is_set():
+        if STOP or RUN_DONE.is_set() or G_RUNID != rid:
             break
         with CHUNK_LOCK:
             fin = NCH > 0 and CHUNKS_DONE >= NCH
@@ -1239,12 +1491,38 @@ def monitor():
             fin = NCH > 0 and CHUNKS_DONE >= NCH
         if fin: break
 
+def _chunk_positions():
+    """Part-finished chunks -> {chunk: next byte needed}. Call with CHUNK_LOCK."""
+    return {str(i): CHUNK_POS[i] for i in range(NCH)
+            if CHUNK_STATE.get(i) != 'done' and i in CHUNK_POS}
+
+def _write_manifest(out, vok=None):
+    """Atomic .resume save. Deliberately no fsync of the download: on Windows the
+    first flush of a pre-sized file zero-fills the gap and freezes every writer
+    (6s per 4 GB measured). A crash of this program loses nothing; a power cut
+    can leave a chunk marked done but unwritten, which --sha would catch."""
+    with CHUNK_LOCK:
+        done_list = [i for i in range(NCH) if CHUNK_STATE.get(i) == 'done']
+        pos = _chunk_positions()
+    rec = {'url': ORIG_URL, 'size': TOTAL_SIZE, 'chunks': NCH, 'done': done_list, 'pos': pos,
+           'etag': V_ETAG, 'lastmod': V_LM, 'build': BUILD}
+    if vok is not None:
+        rec['vok'] = vok
+    tmp = out + '.resume.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(rec, f)
+    os.replace(tmp, out + '.resume')
+    return done_list
+
 def ticker(out):
     pf = out + '.progress'
-    mf = out + '.resume'
+    rid = G_RUNID
+    n = 0
     while True:
         time.sleep(1)
-        if STOP or RUN_DONE.is_set():
+        # The run id check matters: without it a ticker from the previous file
+        # could wake inside the next run and write ghost files for the old one.
+        if STOP or RUN_DONE.is_set() or G_RUNID != rid:
             break
         try:
             with TOTAL_DONE_LOCK:
@@ -1252,16 +1530,10 @@ def ticker(out):
             with open(pf, 'w') as f: f.write(f'{d} {time.time()}')
         except Exception:
             pass
-        if NCH > 1:
+        n += 1
+        if TOTAL_SIZE and n % 5 == 0:
             try:
-                with CHUNK_LOCK:
-                    done_list = [i for i in range(NCH) if CHUNK_STATE.get(i) == 'done']
-                tmp = mf + '.tmp'
-                with open(tmp, 'w') as f:
-                    json.dump({'url': ORIG_URL, 'size': TOTAL_SIZE, 'chunks': NCH,
-                               'done': done_list, 'etag': V_ETAG, 'lastmod': V_LM,
-                               'build': BUILD}, f)
-                os.replace(tmp, mf)
+                _write_manifest(out)
             except Exception:
                 pass
         with CHUNK_LOCK:
@@ -1308,220 +1580,432 @@ def _spin(msg, gate):
             sys.stdout.flush()
         except Exception:
             pass
-    threading.Thread(target=_run, daemon=True).start()
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
 
 def _yticks(msg, fn):
     """Run fn() while showing the loading animation. Returns fn()'s result."""
     done = threading.Event()
-    _spin(msg, done.is_set)
+    t = _spin(msg, done.is_set)
     try:
         return fn()
     finally:
         done.set()
+        if t:
+            t.join(0.5)   # let it wipe its line before anything else prints
 
-def _cell(s, width):
-    vis = _ANSI.sub('', s)
-    if len(vis) > width:
-        return vis[:width]
-    return s + ' ' * (width - len(vis))
+def _wcw(ch):
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ('W', 'F') else 1
 
-def dash(out, use, nchunks):
-    global HELP_SHOW
-    if os.name == 'nt':
-        try: os.system('')
-        except Exception: pass
-    C = {'rst': '\x1b[0m', 'bld': '\x1b[1m', 'dim': '\x1b[2m',
+def _vis_len(s):
+    return sum(_wcw(c) for c in _ANSI.sub('', s))
+
+def _fit(s, width):
+    """Cut or pad a coloured string to exactly `width` terminal cells. Colours
+    survive the cut and double-width characters (CJK, emoji) count as 2."""
+    if width <= 0:
+        return ''
+    out, used, pos, cut = [], 0, 0, False
+    while pos < len(s):
+        m = _ANSI.match(s, pos)
+        if m:
+            out.append(m.group(0))
+            pos = m.end()
+            continue
+        w = _wcw(s[pos])
+        if used + w > width:
+            cut = True
+            break
+        out.append(s[pos])
+        used += w
+        pos += 1
+    return ''.join(out) + ('\x1b[0m' if cut and '\x1b[' in s else '') + ' ' * (width - used)
+
+def _rate(b):
+    if b >= 1e9: return f'{b/1e9:.2f} GB/s'
+    if b >= 1e6: return f'{b/1e6:.1f} MB/s'
+    return f'{b/1e3:.0f} KB/s'
+
+def _size(b):
+    if b >= 1e9: return f'{b/1e9:.2f} GB'
+    if b >= 1e6: return f'{b/1e6:.1f} MB'
+    return f'{b/1e3:.0f} KB'
+
+def _clock(sec):
+    sec = int(max(0, sec))
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    if h: return f'{h}h {m:02d}m'
+    if m: return f'{m}m {s:02d}s'
+    return f'{s}s'
+
+def _plain_label(lbl):
+    """'Wi-Fi (192.168.1.5)' -> 'Wi-Fi': simple mode never shows addresses."""
+    return re.sub(r'\s*\([\d.]+\)$', '', lbl or '') or 'Connection'
+
+def _tui_style(color=None, unicode_ok=None, braille=None):
+    """(colours, glyphs) for the current terminal. Falls back to plain ASCII on
+    legacy code pages and to block graphs where the font has no braille."""
+    if color is None:
+        color = os.environ.get('NO_COLOR') is None
+    if unicode_ok is None:
+        unicode_ok = os.environ.get('MULTILINK_ASCII') != '1'
+        if unicode_ok:
+            try:
+                '╭─╮│╰╯█░●▁⣿'.encode(sys.stdout.encoding or 'utf-8')
+            except Exception:
+                unicode_ok = False
+    if braille is None:
+        pick = (os.environ.get('BANDWIDTHGOBLIN_GRAPH') or '').lower()
+        # Classic conhost + Consolas draws braille as empty boxes.
+        braille = pick == 'braille' or (pick != 'block' and (os.name != 'nt' or bool(os.environ.get('WT_SESSION'))))
+    C = {'rst': '\x1b[0m', 'bld': '\x1b[1m', 'dim': '\x1b[2m', 'inv': '\x1b[7m',
          'cyan': '\x1b[38;2;180;190;254m', 'grn': '\x1b[38;2;166;227;161m',
          'ylw': '\x1b[38;2;249;226;175m', 'red': '\x1b[38;2;243;139;168m',
          'sky': '\x1b[38;2;137;220;235m', 'peach': '\x1b[38;2;250;179;135m',
          'pink': '\x1b[38;2;245;194;231m', 'teal': '\x1b[38;2;148;226;213m',
-         'inv': '\x1b[7m', 'box': '\x1b[38;2;203;166;247m'}
-    if os.environ.get('NO_COLOR') is not None:
+         'box': '\x1b[38;2;137;140;170m', 'mauve': '\x1b[38;2;203;166;247m'}
+    if not color:
         C = {k: '' for k in C}
-    uni = os.environ.get('MULTILINK_ASCII') != '1'
-    if uni:
+    if unicode_ok:
+        G = {'tl': '╭', 'tr': '╮', 'bl': '╰', 'br': '╯', 'h': '─', 'v': '│', 'full': '█', 'empty': '░',
+             'dot': '●', 'sel': '›', 'done': '■', 'run': '▣', 'wait': '·', 'logo': '👺 ',
+             'braille': bool(braille), 'blocks': ' ▁▂▃▄▅▆▇█', 'sep': ' · ', 'up': '↑↓'}
+    else:
+        G = {'tl': '+', 'tr': '+', 'bl': '+', 'br': '+', 'h': '-', 'v': '|', 'full': '#', 'empty': '-',
+             'dot': '*', 'sel': '>', 'done': '#', 'run': '>', 'wait': '.', 'logo': '',
+             'braille': False, 'blocks': None, 'sep': ' - ', 'up': 'up/dn'}
+    return C, G
+
+def _graph(vals, w, h, C, G):
+    """btop-style history graph: h rows x w columns, newest on the right,
+    coloured green -> yellow -> red towards the top."""
+    if w <= 0 or h <= 0:
+        return []
+    per = 2 if G['braille'] else 1
+    vals = list(vals)[-(w * per):]
+    vals = [0.0] * (w * per - len(vals)) + vals
+    top = max(max(vals), 1e-6)
+    steps = 4 if G['braille'] else (8 if G['blocks'] else 1)
+    lv = [(max(1, round(v / top * h * steps)) if v > 0 else 0) for v in vals]
+    rows = []
+    for r in range(h):
+        floor = (h - 1 - r) * steps
+        frac = (h - r) / h
+        col = C['red'] if frac > 0.8 else (C['ylw'] if frac > 0.5 else C['grn'])
+        cells = []
+        for x in range(w):
+            if G['braille']:
+                bits, a, b = 0, min(steps, max(0, lv[x * 2] - floor)), min(steps, max(0, lv[x * 2 + 1] - floor))
+                for i in range(a):
+                    bits |= (0x40, 0x04, 0x02, 0x01)[i]
+                for i in range(b):
+                    bits |= (0x80, 0x20, 0x10, 0x08)[i]
+                cells.append(chr(0x2800 + bits) if bits else ' ')
+            elif G['blocks']:
+                cells.append(G['blocks'][min(steps, max(0, lv[x] - floor))])
+            else:
+                cells.append('#' if lv[x] > floor else ' ')
+        rows.append(col + ''.join(cells) + C['rst'])
+    return rows
+
+def _spark(vals, w, G):
+    if w <= 0:
+        return ''
+    vals = list(vals)[-w:]
+    top = max(vals + [1e-6])
+    gl = G['blocks'] or ' .:-=+*#%@'
+    n = len(gl) - 1
+    return ' ' * (w - len(vals)) + ''.join(gl[min(n, int(v / top * n + (0.99 if v > 0 else 0)))] for v in vals)
+
+def _meter(frac, w, col, C, G):
+    if w <= 0:
+        return ''
+    n = int(w * max(0.0, min(1.0, frac)))
+    return col + G['full'] * n + C['rst'] + C['dim'] + G['empty'] * (w - n) + C['rst']
+
+_HELP_SIMPLE = ('P  pause or continue',
+                'ESC  stop - your progress is saved, run the same link again to continue',
+                'A  advanced view: live graph, each connection, speed limit',
+                'H  close this help')
+_HELP_ADV = ('p pause/continue   r continue   esc/q stop safely (progress is saved)',
+             '-  cap the speed 25% lower   +  raise the cap   0  remove the cap',
+             'up/down pick a connection   x rest or wake it   s sort connections',
+             '1 graph   2 connections   3 chunks   4 log   a simple view   h close help')
+
+def _frame_simple(S, W, H, C, G):
+    pad = '  '
+    w = max(4, min(W - 4, 72))
+    size, tot = S['size'], S['tot']
+    pct = tot / size if size else 0
+    links = S['links']
+    L = ['', pad + C['bld'] + C['mauve'] + G['logo'] + 'BandwidthGoblin' + C['rst'], '',
+         pad + C['bld'] + S['name'] + C['rst'], '']
+    if size:
+        L.append(pad + _meter(pct, max(1, w - 6), C['grn'], C, G) + f" {C['bld']}{pct*100:3.0f}%{C['rst']}")
+    else:
+        L.append(pad + C['dim'] + 'size not known yet - the server did not say' + C['rst'])
+    L.append('')
+    of = f'{_size(tot)} of {_size(size)}' if size else f'{_size(tot)} so far'
+    if S['paused']:
+        L.append(pad + C['ylw'] + C['bld'] + 'Paused' + C['rst'] + G['sep'] + of + G['sep'] + 'press P to continue')
+    else:
+        left = 'finishing up...' if tot >= size else (f"about {_clock(S['eta'])} left" if S['eta'] else 'working out time left...')
+        L.append(pad + C['bld'] + C['grn'] + _rate(S['speed']) + C['rst'] + G['sep'] + of + (G['sep'] + left if size else ''))
+    live = [l for l in links if l['status'] != 'off']
+    if live:
+        names = list(dict.fromkeys(_plain_label(l['label']) for l in live))
+        word = '1 connection' if len(live) == 1 else f'{len(live)} connections together'
+        L.append(pad + C['dim'] + f"Using {word}: {', '.join(names)}" + C['rst'])
+    if S['limit']:
+        L.append(pad + C['dim'] + f"Speed capped at {_rate(S['limit'])}" + C['rst'])
+    if S['msg']:
+        L.append(pad + C['ylw'] + S['msg'] + C['rst'])
+    L.append('')
+    if S['help']:
+        L.extend(pad + C['dim'] + h + C['rst'] for h in _HELP_SIMPLE)
+        L.append('')
+    keys = (('P', 'continue' if S['paused'] else 'pause'), ('ESC', 'stop & save'), ('A', 'advanced'), ('H', 'help'))
+    L.append(pad + '   '.join(f"{C['bld']}{C['cyan']}{k}{C['rst']} {C['dim']}{v}{C['rst']}" for k, v in keys))
+    return L
+
+def _box(title, lines, w, h, C, G):
+    """A titled panel, exactly w x h cells."""
+    t = f"{G['h']} {title} " if w > len(title) + 6 else ''
+    top = C['box'] + G['tl'] + t + G['h'] * max(0, w - 2 - len(t)) + G['tr'] + C['rst']
+    bot = C['box'] + G['bl'] + G['h'] * max(0, w - 2) + G['br'] + C['rst']
+    v = C['box'] + G['v'] + C['rst']
+    body = [v + _fit(ln, w - 2) + v for ln in (list(lines) + [''] * h)[:max(0, h - 2)]]
+    return [top] + body + [bot]
+
+def _links_panel(S, w, h, C, G):
+    rows = max(0, h - 3)
+    room = max(0, w - 2 - 38)       # what the fixed columns leave over
+    name = max(10, min(24, room))
+    bar = max(0, min(16, room - name))
+    spk = max(0, min(24, room - name - bar - 1))
+    head = C['dim'] + f"    {'connection':<{name}} {'':<{bar}} {'speed':>10} {'total':>9} {'conn':>4} {'state':<5}" + C['rst']
+    links = S['links']
+    top = max(0, S['sel'] - rows + 1)
+    fast = max([l['speed'] for l in links] + [1e-6])
+    out = [head]
+    for i, l in enumerate(links[top:top + rows], top):
+        col = C.get(l.get('color'), C['cyan'])
+        stc = {'on': C['grn'], 'new': C['cyan'], 'off': C['red'], 'rest': C['ylw']}.get(l['status'], C['dim'])
+        mark = C['bld'] + G['sel'] + C['rst'] if i == S['sel'] else ' '
+        lbl = _fit(l['label'], name)
+        out.append(f"{mark} {stc}{G['dot']}{C['rst']} {col}{lbl}{C['rst']} "
+                   f"{_meter(l['speed'] / fast, bar, col, C, G)} {C['bld']}{_rate(l['speed']):>10}{C['rst']} "
+                   f"{_size(l['total']):>9} {l['conns']:>4} {stc}{l['status']:<5}{C['rst']}"
+                   + (' ' + col + _spark(l['hist'], spk, G) + C['rst'] if spk > 3 else ''))
+    if not links:
+        out.append(C['dim'] + '   default connection' + C['rst'])
+    return out
+
+def _job_panel(S, w, h, C, G):
+    size, tot = S['size'], S['tot']
+    pct = tot / size if size else 0
+    col = C['red'] if pct < .3 else (C['ylw'] if pct < .7 else C['grn'])
+    iw = max(1, w - 2)
+    n = len(S['chunks'])
+    out = [_meter(pct, max(1, iw - 7), col, C, G) + f" {col}{C['bld']}{pct*100:5.1f}%{C['rst']}" if size
+           else C['dim'] + 'size unknown' + C['rst'],
+           f"{_size(tot)} / {_size(size) if size else '?'}",
+           f"eta {C['bld']}{_clock(S['eta']) if S['eta'] else '--'}{C['rst']}  ran {_clock(S['elapsed'])}",
+           f"avg {_rate(S['avg'])}  peak {_rate(S['peak'])}",
+           f"cap {_rate(S['limit']) if S['limit'] else 'off'}  chunks {S['ndone']}/{n}"]
+    rows = max(0, h - 2 - len(out))
+    cells = iw * rows
+    if rows and n:
+        ch = S['chunks']
+        if n > cells:
+            # More chunks than cells: one cell = a group; done only if all are.
+            ch = [(lambda g: 'done' if all(c == 'done' for c in g) else
+                   next((c for c in g if isinstance(c, int)), 'wait'))(ch[i * n // cells:max(i * n // cells + 1, (i + 1) * n // cells)])
+                  for i in range(cells)]
+        palette = [C[k] for k in ('sky', 'peach', 'pink', 'teal', 'cyan', 'ylw')]
+        for r in range(rows):
+            seg = ch[r * iw:(r + 1) * iw]
+            if not seg:
+                break
+            out.append(''.join(C['grn'] + G['done'] + C['rst'] if c == 'done'
+                               else (C['dim'] + G['wait'] + C['rst'] if c == 'wait'
+                                     else palette[c % len(palette)] + G['run'] + C['rst']) for c in seg))
+    return out
+
+def _frame_adv(S, W, H, C, G):
+    state = C['ylw'] + C['bld'] + 'PAUSED' + C['rst'] if S['paused'] else C['grn'] + C['bld'] + 'RUNNING' + C['rst']
+    head = (' ' + C['bld'] + C['mauve'] + 'BandwidthGoblin' + C['rst'] + C['dim'] + ' ' + S['ver'] + C['rst'] + '  ' + state
+            + '  ' + C['bld'] + _rate(S['speed']) + C['rst'] + '  ' + C['dim'] + S['name'] + C['rst'])
+    pairs = (('p', 'continue' if S['paused'] else 'pause'), ('esc', 'stop'), ('a', 'simple'), ('h', 'help'),
+             ('+-', 'cap'), (G['up'], 'pick'), ('x', 'rest'), ('s', 'sort'), ('1-4', 'panels'))
+    foot = ' ' + ' '.join(f"{C['bld']}{C['cyan']}{k}{C['rst']}{C['dim']} {v}{C['rst']}" for k, v in pairs)
+    avail = H - 2
+    P = S['panels']
+    show_log = 'log' in P and avail >= 18
+    show_net = 'net' in P and avail >= 10
+    log_h = (7 if avail >= 30 else 5) if show_log else 0
+    show_mid = 'links' in P or 'chunks' in P
+    net_h = 0
+    if show_net:
+        net_h = avail - log_h if not show_mid else max(5, int((avail - log_h) * 0.38))
+    mid_h = avail - net_h - log_h
+    if not show_mid and not show_net:
+        log_h, mid_h = (avail if show_log else 0), 0
+    L = [head]
+    if net_h:
+        gh = net_h - 2
+        title = f"1 net  {_rate(S['speed'])} now  top of graph {_rate(max(list(S['hist'])[-(W * 2):] + [0]))}"
+        L += _box(title, _graph(S['hist'], W - 2, gh, C, G), W, net_h, C, G)
+    if mid_h >= 3:
+        if 'links' in P and 'chunks' in P:
+            rw = max(24, min(W // 2, 38))
+            lw = W - rw
+            a = _box('2 links', _links_panel(S, lw, mid_h, C, G), lw, mid_h, C, G)
+            b = _box('3 chunks', _job_panel(S, rw, mid_h, C, G), rw, mid_h, C, G)
+            L += [x + y for x, y in zip(a, b)]
+        elif 'links' in P:
+            L += _box('2 links', _links_panel(S, W, mid_h, C, G), W, mid_h, C, G)
+        elif 'chunks' in P:
+            L += _box('3 chunks', _job_panel(S, W, mid_h, C, G), W, mid_h, C, G)
+    if log_h:
+        if S['help']:
+            L += _box('help', _HELP_ADV, W, log_h, C, G)
+        else:
+            rows = list(S['log'])[-max(0, log_h - 2):]
+            L += _box('4 log', [C['dim'] + ln + C['rst'] for ln in rows], W, log_h, C, G)
+    elif S['help']:
+        L[1:1 + len(_HELP_ADV)] = list(_HELP_ADV)
+    if S['msg']:
+        foot = ' ' + C['ylw'] + S['msg'] + C['rst']
+    L = (L + [''] * H)[:H - 1] + [foot]
+    return L
+
+def _frame(S, W, H, C, G):
+    """Pure renderer: engine snapshot -> exactly H lines, each at most W cells
+    wide. Advanced falls back to simple when the window cannot hold its panels."""
+    adv = S.get('mode') == 'advanced' and W >= 60 and H >= 14
+    lines = _frame_adv(S, W, H, C, G) if adv else _frame_simple(S, W, H, C, G)
+    if len(lines) > H:
+        lines = lines[:H - 1] + lines[-1:] if H > 1 else lines[-1:]
+    return [_fit(ln, W).rstrip(' ') for ln in lines] + [''] * (H - len(lines))
+
+_SCREEN_ON = False
+
+def _screen_restore():
+    global _SCREEN_ON
+    if _SCREEN_ON:
+        _SCREEN_ON = False
         try:
-            '╭─╮│╰╯├┤█░●'.encode(sys.stdout.encoding or 'utf-8')
+            sys.stdout.write('\x1b[?7h\x1b[?25h\x1b[?1049l')
+            sys.stdout.flush()
         except Exception:
-            uni = False
-    G = ({'tl': '╭', 'tr': '╮', 'bl': '╰', 'br': '╯', 'h': '─', 'v': '│',
-          'lt': '├', 'rt': '┤', 'full': '█', 'empty': '░', 'dot': '●'}
-         if uni else
-         {'tl': '+', 'tr': '+', 'bl': '+', 'br': '+', 'h': '-', 'v': '|',
-          'lt': '+', 'rt': '+', 'full': '#', 'empty': '-', 'dot': '*'})
-    def _geom():
-        """Current console width -> (inner width, top/mid/bottom borders).
-        Re-read every frame so the dashboard tracks window resizes."""
-        try:
-            import shutil as _sh
-            _tw = _sh.get_terminal_size().columns
-        except Exception:
-            _tw = 90
-        w = min(max(_tw - 2, 50), 160)
-        return (w,
-                C['box'] + G['tl'] + G['h'] * w + G['tr'] + C['rst'],
-                C['box'] + G['lt'] + G['h'] * w + G['rt'] + C['rst'],
-                C['box'] + G['bl'] + G['h'] * w + G['br'] + C['rst'])
-    W, top, mid, bot = _geom()
+            pass
 
-    def row(s):
-        return C['box'] + G['v'] + C['rst'] + ' ' + _cell(s, W - 2) + ' ' + C['box'] + G['v'] + C['rst']
+atexit.register(_screen_restore)
 
-    def meter(frac, w, col=None):
-        f = max(0.0, min(1.0, frac))
-        n = int(w * f)
-        c = col or C['grn']
-        return c + G['full'] * n + C['dim'] + G['empty'] * (w - n) + C['rst']
+def _say(msg):
+    """Print a message the user must not miss: while the full-screen view is up
+    it waits until that view closes, otherwise it would vanish with it."""
+    if _SCREEN_ON:
+        POST_DASH.append(msg)
+    else:
+        print(msg, flush=True)
 
+def _flush_said():
+    while POST_DASH:
+        print(POST_DASH.pop(0), flush=True)
+
+def dash(out, use, nchunks):
+    """Live full-screen view. Samples the engine, hands a snapshot to the pure
+    _frame() renderer, and keeps its own hands off the download."""
+    global DASH_ON, _SCREEN_ON
+    if os.name == 'nt':
+        try: os.system('')
+        except Exception: pass
+    C, G = _tui_style()
+    rid = G_RUNID
     ema_tot = 0.0
+    peak = 0.0
     with TOTAL_DONE_LOCK: prev_tot = TOTAL_DONE
+    start_tot = prev_tot
     with LINK_LOCK: prev_links = dict(LINK_DONE)
     prev_t = time.time()
     name = os.path.basename(out)
-    if len(name) > 34: name = name[:33] + '…'
-    sys.stdout.write('\x1b[?25l')
+    colours = ['sky', 'peach', 'pink', 'teal', 'cyan', 'ylw']
+    _TUI['use'] = use
+    _SCREEN_ON = True
     try:
-        while True:
-            time.sleep(0.2)
-            if STOP or RUN_DONE.is_set():
-                break
-            W, top, mid, bot = _geom()
+        sys.stdout.write('\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J')
+        while not STOP and not RUN_DONE.is_set() and G_RUNID == rid:
+            time.sleep(0.25)
             with TOTAL_DONE_LOCK: tot = TOTAL_DONE
             if TOTAL_SIZE: tot = min(tot, TOTAL_SIZE)
-            now = time.time(); dt = now - prev_t or 1e-6
-            inst = (tot - prev_tot) / dt
+            now = time.time(); dt = max(now - prev_t, 1e-6)
+            inst = max(0.0, (tot - prev_tot) / dt)
             ema_tot = inst if ema_tot == 0 else ema_tot * 0.7 + inst * 0.3
+            peak = max(peak, ema_tot)
             prev_tot, prev_t = tot, now
             SPARK.append(ema_tot)
+            _TUI['speed'] = ema_tot
             with LINK_LOCK: cur = dict(LINK_DONE)
-            el = now - T0
-            pct = tot / TOTAL_SIZE if TOTAL_SIZE else 0
-            eta = (TOTAL_SIZE - tot) / ema_tot if ema_tot > 0 and TOTAL_SIZE else 0
-            etas = f'{eta/60:.0f}m{eta%60:02.0f}s' if ema_tot > 0 else '--'
-            _pc = pct * 100
-            _pcc = C['red'] if _pc < 30 else (C['ylw'] if _pc < 70 else C['grn'])
             with G_LOCK:
-                _ips = list(use)   # one consistent snapshot per frame - `use` mutates under G_LOCK (build 47 audit C1)
-            _LCMAP = {}
-            _LCC = ['sky', 'peach', 'pink', 'teal', 'cyan', 'ylw']
-            for _ni, _nip in enumerate(_ips):
-                _LCMAP[_nip] = _LCC[_ni % len(_LCC)]
-            L = [top,
-                 row(f"{C['bld']}{C['cyan']}BANDWIDTHGOBLIN v{VERSION} b{BUILD}{_VER_LABEL}{C['rst']}  {C['dim']}{name}{C['rst']}  {_pcc}{C['bld']}{_pc:5.1f}%{C['rst']}"),
-                 row(f"{C['inv']}{C['bld']}  ▼ {ema_tot/1e6:6.2f} MB/s  {C['rst']}  {C['dim']}{tot/1e6:,.1f}/{TOTAL_SIZE/1e6:,.1f} MB  ETA {etas}  el {int(el)//60:02d}:{int(el)%60:02d}{C['rst']}"),
-                 row(f"{meter(pct, W - 14, _pcc)} {_pcc}{C['bld']}{_pc:4.1f}%{C['rst']}"),
-                 mid]
-            mx = 1e-6
-            spd = {}
-            for ip in _ips:
+                ips = list(use)
+                act = dict(ACTIVE)
+            order = {ip: i for i, ip in enumerate(ips)}
+            links = []
+            for ip in ips:
                 v = (cur.get(ip, 0) - prev_links.get(ip, 0)) / dt
                 e = DASH_EMA.get(ip, 0.0)
                 e = v if e == 0 else e * 0.7 + v * 0.3
                 DASH_EMA[ip] = e
-                spd[ip] = e
-                mx = max(mx, e)
-            for ip in _ips:
-                parked = not ip_ok(ip)
-                is_new = ip in LINK_JOINED and (time.time() - LINK_JOINED.get(ip, 0)) < 60
-                if parked:
-                    dot = C['red'] + G['dot'] + C['rst']
-                    st = C['red'] + 'OFF' + C['rst']
-                elif is_new:
-                    dot = C['cyan'] + G['dot'] + C['rst']
-                    st = C['cyan'] + 'NEW' + C['rst']
-                else:
-                    dot = C['grn'] + G['dot'] + C['rst']
-                    st = C['grn'] + 'ON' + C['rst']
-                _lc = C.get(_LCMAP.get(ip, 'cyan'), C['cyan'])
-                _sv = spd[ip] / 1e6
-                _sc = C['grn'] if _sv >= 2 else (C['ylw'] if _sv >= 0.5 else C['red'])
-                _bw = max(6, min(16, W // 9))
-                _lbl = link_label(ip)
-                L.append(row(f"{dot} {_lc}{_lbl:<22}{C['rst']} {meter(spd[ip]/mx, _bw, _sc)} {C['bld']}{_sc}{_sv:6.2f}{C['rst']} MB/s {cur.get(ip,0)/1e6:8.1f}MB x{LINK_THREADS.get(ip,1)} {st}"))
+                LINK_HIST.setdefault(ip, collections.deque(maxlen=120)).append(e)
+                st = 'rest' if ip in BENCHED else ('off' if not ip_ok(ip) else
+                     ('new' if now - LINK_JOINED.get(ip, 0) < 60 else 'on'))
+                links.append({'ip': ip, 'label': link_label(ip) if ip else 'Default connection', 'speed': e,
+                              'total': cur.get(ip, 0), 'conns': act.get(ip, 0), 'status': st,
+                              'hist': LINK_HIST[ip], 'color': colours[order[ip] % len(colours)]})
             prev_links = cur
+            srt = _TUI['sort']
+            if srt == 1: links.sort(key=lambda l: -l['speed'])
+            elif srt == 2: links.sort(key=lambda l: -l['total'])
+            _TUI['sel'] = max(0, min(_TUI['sel'], len(links) - 1))
+            _TUI['sel_ip'] = links[_TUI['sel']]['ip'] if links else None
             with CHUNK_LOCK:
                 states = [CHUNK_STATE.get(i) for i in range(nchunks)]
-                ndone = sum(1 for s in states if s == 'done')
-            plain = ''.join('#' if s == 'done' else ('>' if s not in (None, '.') else '.') for s in states)
-            plain = plain[:max(0, W - 34)]
-            cells = ''.join((C['grn'] + '#' + C['rst']) if c == '#' else ((C['ylw'] + '>' + C['rst']) if c == '>' else (C['dim'] + '.' + C['rst'])) for c in plain)
-            _sw = int(el)
-            _sws = f'{_sw//3600:02d}:{_sw%3600//60:02d}:{_sw%60:02d}'
-            L.append(row(f"chunks {C['bld']}{ndone}/{nchunks}{C['rst']} {cells} {C['dim']}{_sws}{C['rst']}"))
-            _sp = list(SPARK)
-            if _sp:
-                _mx = max(_sp) or 1e-6
-                _gl = ' ▁▂▃▄▅▆▇█'
-                _w = max(8, min(42, W - 34))
-                _vals = _sp
-                if len(_vals) > _w:
-                    _step = len(_vals) / _w
-                    _vals = [_vals[int(i * _step)] for i in range(_w)]
-                _spark = ''.join(_gl[min(8, int(v / _mx * 8))] for v in _vals)
-                _avg = tot / el if el else 0
-                _avgc = C['grn'] if _avg >= 1e6 else (C['ylw'] if _avg >= 3e5 else C['red'])
-                L.append(row(f"speed {C['dim']}{_spark}{C['rst']}  avg {_avgc}{C['bld']}{_avg/1e6:5.2f}{C['rst']} MB/s"))
-            L.append(bot)
-            if HELP_SHOW and time.time() < HELP_UNTIL:
-                for _hl in ('[P]/[R]  pause + resume             [ESC]  stop safely (progress is saved)',
-                            '[H]  hide this help - paste ANY link: games, ISOs, and YouTube (1080/720/audio are quality picks)',
-                            'queues: --queue list.txt   speed cap: --limit 5   interfaces: --links 0,1   more: --help'):
-                    L.append(C['dim'] + ' ' + _hl + C['rst'])
-            elif HELP_SHOW:
-                HELP_SHOW = False
-            for l in list(RING)[-4:]:
-                L.append(C['dim'] + ' ' + l[-70:] + C['rst'])
-            L.append(C['dim'] + ' [P] pause  [R] resume  [ESC] stop safely  [H] help    ' + os.path.basename(out) + '.log' + C['rst'])
+            chunks = ['done' if s == 'done' else ('wait' if s in (None, '.') else order.get(s, 0)) for s in states]
+            el = now - T0
+            if _TUI['help'] and now > _TUI['help_until']:
+                _TUI['help'] = False
+            S = {'name': name, 'tot': tot, 'size': TOTAL_SIZE, 'speed': ema_tot, 'peak': peak,
+                 'avg': (tot - start_tot) / max(el, 1e-6),
+                 'eta': (TOTAL_SIZE - tot) / ema_tot if ema_tot > 1000 and TOTAL_SIZE and (TOTAL_SIZE - tot) / ema_tot < 360000 else 0,
+                 'elapsed': el, 'paused': PAUSED, 'limit': SPEEDLIMIT, 'ver': f'v{VERSION} b{BUILD}',
+                 'links': links, 'chunks': chunks, 'ndone': chunks.count('done'), 'hist': SPARK,
+                 'log': RING, 'help': _TUI['help'], 'panels': _TUI['panels'], 'sel': _TUI['sel'],
+                 'sort': srt, 'msg': _TUI['msg'] if now < _TUI['msg_until'] else '', 'mode': UI_MODE}
             try:
-                import shutil as _sh
-                try:
-                    _tw = _sh.get_terminal_size().columns
-                except Exception:
-                    _tw = 120
-                _fr = []
-                for _ln in L:
-                    _v = _ANSI.sub('', _ln)
-                    _fr.append(_v[:max(0, _tw)] if len(_v) > _tw else _ln)
-                sys.stdout.write('\x1b[H' + '\n'.join(_fr) + '\x1b[J')
+                sz = shutil.get_terminal_size((100, 30))
+                fr = _frame(S, sz.columns, sz.lines, C, G)
+                sys.stdout.write('\x1b[?2026h' + ''.join(f'\x1b[{i};1H{ln}\x1b[K' for i, ln in enumerate(fr, 1)) + '\x1b[?2026l')
                 sys.stdout.flush()
             except Exception as ex:
-                global DASH_ON
                 DASH_ON = False
-                try:
-                    sys.stdout.write('\x1b[?25h\n')
-                    sys.stdout.flush()
-                except Exception:
-                    pass
                 log(f'dashboard disabled, plain logs: {ex}')
                 break
-            with CHUNK_LOCK:
-                fin = NCH > 0 and CHUNKS_DONE >= NCH
-            if fin:
-                _dp = os.path.abspath(out)
-                if len(_dp) > 54:
-                    _dp = '...' + _dp[-51:]
-                _dl = [top,
-                       row(f"{C['grn']}{C['bld']}DONE{C['rst']}  {os.path.basename(out)}"),
-                       row(f"downloaded at: {C['cyan']}{_dp}{C['rst']}"),
-                       row(f"{tot/1e6:,.1f} MB in {int(el)//60}m{int(el)%60:02d}s  avg {tot/max(el,1e-6)/1e6:.2f} MB/s"),
-                       bot]
-                try:
-                    sys.stdout.write('\x1b[H' + '\n'.join(_dl) + '\x1b[J')
-                    sys.stdout.flush()
-                    time.sleep(8)
-                except Exception:
-                    pass
-                break
     finally:
-        sys.stdout.write('\x1b[?25h\n')
-        sys.stdout.flush()
+        _screen_restore()
 
 def auto_tune():
     import time as _t
     last = {}
-    while not STOP and not RUN_DONE.is_set():
+    rid = G_RUNID
+    while not STOP and not RUN_DONE.is_set() and G_RUNID == rid:
         _t.sleep(20)
-        if STOP or RUN_DONE.is_set():
+        if STOP or RUN_DONE.is_set() or G_RUNID != rid:
             break
         if PAUSED:
             continue
@@ -1650,10 +2134,31 @@ def try_steal(out, ip, q):
     log(f'steal of chunk{best} via {ip} delivered {(e-pos+1)/1e6:.1f}MB')
     return True
 
+def _requeue_link(ip, q):
+    """Hand a dropped link's chunks back to the queue from where they got to. The
+    bytes before that point are already saved and counted; restarting from the
+    chunk's start would waste them and push the progress total past the real one."""
+    orph = []
+    with CHUNK_LOCK:
+        for idx, stt in list(CHUNK_STATE.items()):
+            if stt == ip:
+                s, e = CHUNK_RANGE.get(idx, (0, 0))
+                if isinstance(e, int):
+                    CHUNK_OWNER[idx] = ('gone', time.time())
+                    CHUNK_END[idx] = s - 1
+                    CHUNK_STATE[idx] = '.'
+                    orph.append((idx, max(CHUNK_POS.get(idx, s), s), e))
+    for item in orph:
+        q.put(item)
+
 def membership(q, out, per_link, use, ex, rid):
     import time as _t
     while not STOP and not RUN_DONE.is_set() and G_RUNID == rid:
-        _t.sleep(2)
+        # Every look spawns ipconfig/ip; 5s still catches a hot-plug promptly.
+        for _ in range(10):
+            _t.sleep(0.5)
+            if STOP or RUN_DONE.is_set() or G_RUNID != rid:
+                return
         if STOP or RUN_DONE.is_set() or G_RUNID != rid:
             break
         if NCH <= 1:
@@ -1713,18 +2218,7 @@ def membership(q, out, per_link, use, ex, rid):
                 st['parked_until'] = time.time() + 3600
                 st['fails'] = 0
                 st['gone'] = True
-            orph = []
-            with CHUNK_LOCK:
-                for idx, stt in CHUNK_STATE.items():
-                    if stt == ip:
-                        s, e = CHUNK_RANGE.get(idx, (0, 0))
-                        if isinstance(e, int):
-                            CHUNK_OWNER[idx] = ('gone', time.time())
-                            CHUNK_END[idx] = s - 1
-                            CHUNK_STATE[idx] = '.'
-                            orph.append((idx, s, e))
-            for (idx, s, e) in orph:
-                q.put((idx, s, e))
+            _requeue_link(ip, q)
             log(CNO(f'link lost: {ip} - its chunks re-queued to healthy links'))
         for ip in sorted(have & cur):
             with IP_LOCK:
@@ -1736,6 +2230,12 @@ def membership(q, out, per_link, use, ex, rid):
                     log(CYES(f'link back: {ip}'))
 
 def worker(out, ip, q):
+    try:
+        _worker_loop(out, ip, q)
+    finally:
+        _close_out_fd()
+
+def _worker_loop(out, ip, q):
     global CHUNKS_DONE
     import queue as _q
     while True:
@@ -1934,10 +2434,13 @@ def _perf_path():
         return 'perf.jsonl'
 
 def perf_write(rec):
+    rec = dict(rec)
+    rec['t'] = time.time()
+    rec['build'] = BUILD
+    _bg_put(lambda: _perf_append(rec))
+
+def _perf_append(rec):
     try:
-        rec = dict(rec)
-        rec['t'] = time.time()
-        rec['build'] = BUILD
         with PERF_LOCK:
             p = _perf_path()
             if os.path.exists(p):
@@ -2016,8 +2519,9 @@ def _mini_help():
     print(CYLW('\nwhat BandwidthGoblin can do (no guide needed):'), flush=True)
     print('  paste a link            - downloads over EVERY connection you have at once')
     print('  YouTube link            - auto-downloads (Enter = best, or type 1080/720/480/audio)')
-    print('  [P] / [R]               - pause / resume a download in progress')
-    print('  [H]                     - help overlay right in the dashboard')
+    print('  [P]                     - pause / continue a download in progress')
+    print('  [A]                     - switch between the simple and advanced view')
+    print('  [H]                     - help right on the download screen')
     print('  [ESC]                   - stop safely (progress is saved - rerun to continue)')
     print('  --yt URL 1080           - one-line YouTube download')
     print('  --queue list.txt        - batch many links, one per line')
@@ -2027,13 +2531,16 @@ def _mini_help():
     print('  --selftest              - quick self-check that everything works')
     print('  --help                  - the full option list\n', flush=True)
 
+def _no_link_msg(v):
+    if 'magnet:' in (v or '').lower() or (v or '').lower().rstrip('"\' ').endswith('.torrent'):
+        return "torrents aren't supported yet - paste a direct download or YouTube link."
+    return 'no link found - please copy a link (starts with http) and paste it.'
+
 def acquire_urls():
     global _INTRO_SHOWN
     if not _INTRO_SHOWN:
         _INTRO_SHOWN = True
-        print('  ' + CDIM('paste any link (or YouTube link) - it downloads over every connection you have.'))
-        print('  ' + CDIM('during download: [P] pause  [R] resume  [H] help  [ESC] stop safely'))
-        print('  ' + CDIM("type 'help' here anytime for the feature list."))
+        print('  ' + CDIM("paste a link to download it over every connection you have. Type 'help' for more."))
     while True:
         clip = get_clipboard()
         cl = extract_links(clip)
@@ -2056,7 +2563,7 @@ def acquire_urls():
                 links = extract_links(v2)
                 if links:
                     return links
-                print(CNO('no link found - please copy link(s) and paste them.'))
+                print(CNO(_no_link_msg(v2)))
                 continue
             if extract_links(v):
                 return extract_links(v)
@@ -2076,13 +2583,13 @@ def acquire_urls():
             links = extract_links(v)
             if links:
                 return links
-            print(CNO('no link found - please copy a link (starts with http) and paste it.'))
+            print(CNO(_no_link_msg(v)))
 
 def reset_state():
     global LOGFILE, T0, ORIG_URL, FINAL_URL, TOTAL_SIZE, TOTAL_DONE, DASH_ON, STOP, DASH_MODE
     global LINK_DONE, CHUNK_STATE, REDIR, IP_STATE, DASH_EMA, CHUNK_TRIES, G_RUNID, LINK_JOINED, G_FUTS, G_STARTED, CHUNK_STEALTIME, ACTIVE, WORKER_CAP, STAT429, STEAL_MIN, G429_N, G429_COOLDOWN
     global STOP_REASON, LAST_PROGRESS, V_ETAG, V_LM, RANGE_VERIFIED, EXPECT_SHA, REFRESH_NOOP, CHUNK_STEAL_N, RETRY_SINGLE
-    global _NEIGH_T, PAUSED, LINK_SPEED
+    global _NEIGH_T, PAUSED, LINK_SPEED, STOP_USER
     global VALIDATOR_BROKEN
     # Build 30 audit fixes: a paused run must not leak into the next one (the
     # next download would start frozen forever - every worker stalls on
@@ -2113,6 +2620,9 @@ def reset_state():
         pass
     G_FUTS = []; G_STARTED = set()
     G_RUNID += 1
+    CHUNK_POS.clear(); CHUNK_RANGE.clear(); CHUNK_OWNER.clear(); CHUNK_END.clear()
+    LINK_HIST.clear(); BENCHED.clear(); POST_DASH.clear()
+    _TUI['sel'] = 0; _TUI['msg'] = ''; _TUI['help'] = False
     try: SPARK.clear()
     except Exception: pass
 
@@ -2130,17 +2640,55 @@ def ask(prompt, default=''):
         v = ''
     return v or default
 
+def _safe_filename(name):
+    """A server-supplied name -> a plain file name: never a path that escapes the
+    save folder (a/../../x), never characters or device names Windows refuses."""
+    name = re.split(r'[\\/]', name or '')[-1]
+    name = re.sub(r'[<>:"|?*\x00-\x1f]', '_', name).strip().rstrip('. ')
+    if name in ('', '.', '..'):
+        return ''
+    if re.match(r'(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)', name, re.I):
+        name = '_' + name
+    if len(name) > 200:
+        stem, ext = os.path.splitext(name)
+        name = stem[:200 - len(ext)] + ext
+    return name
+
 def guess_name(url):
     try:
         p = urllib.parse.urlparse(url).path.rsplit('/', 1)[-1]
-        p = urllib.parse.unquote(p)
+        p = _safe_filename(urllib.parse.unquote(p))
         if p and p.lower() not in ('videoplayback', 'download', 'get', 'file'):
             return p
     except Exception:
         pass
     return ''
 
+def suggest_name(url):
+    """guess_name, plus asking the server when the URL itself names no file
+    (/download?id=7): its Content-Disposition, or where the redirects end up."""
+    n = guess_name(url)
+    if n:
+        return n
+    try:
+        final, _s, _a, meta = head(url)
+        return meta.get('name') or guess_name(final)
+    except Exception:
+        return ''
+
+def _clean_path(p):
+    """Drag-and-drop pastes a path in quotes, and ~ means home everywhere."""
+    return os.path.expanduser((p or '').strip().strip('"\''))
+
+def _unused_path(out):
+    stem, ext = os.path.splitext(out)
+    k = 2
+    while os.path.exists(f'{stem} ({k}){ext}'):
+        k += 1
+    return f'{stem} ({k}){ext}'
+
 def _load_perf():
+    _bg_flush()
     recs = []
     try:
         p = _perf_path()
@@ -2272,7 +2820,7 @@ def _parse_flags(tokens):
                 flags.setdefault(k, []).append(v)
             elif k in ('open', 'no-open'):
                 flags['open'] = (k == 'open')
-            elif k in ('dry-run', 'info', 'history', 'resume', 'quiet', 'no-log', 'speedtest', 'selftest'):
+            elif k in ('dry-run', 'info', 'history', 'resume', 'quiet', 'no-log', 'speedtest', 'selftest', 'overwrite', 'advanced', 'simple'):
                 flags[k] = True
             else:
                 out.append(t)
@@ -2288,7 +2836,7 @@ def _read_queue(path):
     Blank lines and #comments skipped; anything that isn't a link is skipped."""
     items = []
     try:
-        with open(path, errors='ignore') as f:
+        with open(path, encoding='utf-8-sig', errors='replace') as f:   # Notepad adds a BOM
             for line in f:
                 s = line.strip()
                 if not s or s.startswith('#'):
@@ -2365,9 +2913,12 @@ def _hist_path():
     return HIST_PATH
 
 def _hist_write(rec):
+    rec = dict(rec)
+    rec['t'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    _bg_put(lambda: _hist_append(rec))
+
+def _hist_append(rec):
     try:
-        rec = dict(rec)
-        rec['t'] = time.strftime('%Y-%m-%d %H:%M:%S')
         with PERF_LOCK:
             with open(_hist_path(), 'a') as f:
                 f.write(json.dumps(rec) + '\n')
@@ -2375,6 +2926,7 @@ def _hist_write(rec):
         pass
 
 def _print_history(n=10):
+    _bg_flush()
     p = _hist_path()
     if not os.path.exists(p):
         print(CDIM('no history yet - completed downloads will be recorded as history.jsonl.'))
@@ -2410,7 +2962,8 @@ def _pick_resume():
     for d in list(dict.fromkeys([load_lastdir() or '', '.'])):
         try:
             for fn in os.listdir(d):
-                if not fn.endswith('.resume'):
+                # YouTube stream parts resume through the video link, not by themselves
+                if not fn.endswith('.resume') or fn.endswith('.tmp.resume'):
                     continue
                 p = os.path.join(d, fn)
                 try:
@@ -2439,7 +2992,7 @@ def _usage():
             '                                      (interactive mode also auto-detects YouTube links;\n'
             '                                      streams split over ALL your connections + merged)\n'
             '  feedback / keys: type "help" at any prompt for the feature list; during a download\n'
-            '                                      P pause | R resume | H help | ESC stop safely\n'
+            '                                      P pause | A advanced view | H help | ESC stop safely\n'
             '  bandwidthgoblin.py --sha <sha256> URL OUT  deep-verify against a hash\n'
             '  bandwidthgoblin.py --history               show the last 10 completed downloads\n'
             '  bandwidthgoblin.py --resume                continue the newest saved .resume download\n'
@@ -2456,6 +3009,8 @@ def _usage():
             '                 maxed (normal = 1 connection/link, =MULTILINK_PRIORITY=high).\n'
             '                 Helps hosts that don\'t throttle per source IP; YouTube\n'
             '                 throttles per IP, so link count matters most there.\n'
+            '  --advanced / --simple   pick the download view (remembered; A switches live)\n'
+            '  --overwrite   replace an existing file (default: keep it, save as "name (2).ext")\n'
             '  --open / --no-open   --history   --resume   --speedtest\n'
             '  --quiet (milestones only)   --no-log (no disk logs)\n'
             '  --jobs N   download a --queue in parallel (1-8 files at once);\n'
@@ -2952,7 +3507,7 @@ def _yt_run(url, headless, fl, quality=None, eflags=None):
     else:
         sug = load_lastdir() or '.'
         v = ask(f'save folder? [Enter = {sug}]: ')
-        od = v.strip() or sug
+        od = _clean_path(v) or sug
         if not od:
             od = '.'
     try:
@@ -3052,9 +3607,9 @@ def _batch_run(items, fl, eflags, jobs):
         if out and os.path.isabs(out):
             name = out
         elif out:
-            name = os.path.join(od, out)
+            name = os.path.join(od, _safe_filename(out) or f'download_{i}.bin')
         else:
-            nm = guess_name(url) or f'download_{i}.bin'
+            nm = suggest_name(url) or f'download_{i}.bin'
             name = os.path.join(od, nm)
         base = os.path.basename(name)
         if base in used:
@@ -3086,7 +3641,7 @@ def _read_manifest(path):
     not look like checksums are ignored so sidecar/extra text stays harmless."""
     recs = []
     try:
-        for line in open(path, errors='ignore'):
+        for line in open(path, encoding='utf-8-sig', errors='replace'):
             s = line.strip()
             if not s or s.startswith('#'):
                 continue
@@ -3232,8 +3787,9 @@ def _selftest():
     return 0 if ok else 1
 
 def main():
-    global STOP, OPEN_AFTER, QUIET, NO_LOG
+    global STOP, OPEN_AFTER, QUIET, NO_LOG, OVERWRITE
     _install_crash_hooks()
+    _load_mode()
     raw = sys.argv[1:]
     _utility = any(a in raw for a in ('--verify', '--selftest', '--history', '--dry-run',
                                       '--info', '--speedtest', '--version', '-V'))
@@ -3256,6 +3812,11 @@ def main():
     for _k in ('referer', 'cookie', 'sha', 'header', 'limit', 'links', 'priority'):
         for _v in (fl.get(_k) or []):
             eflags.append(f'--{_k}={_v}')
+    if fl.get('advanced') or fl.get('simple'):
+        _set_mode('advanced' if fl.get('advanced') else 'simple')
+    if fl.get('overwrite'):
+        OVERWRITE = True
+        eflags.append('--overwrite')
     if 'open' in fl:
         OPEN_AFTER = bool(fl['open'])
     if fl.get('quiet'):
@@ -3436,7 +3997,7 @@ def main():
             if _qo and os.path.isabs(_qo):
                 out = _qo
             else:
-                _nm = _qo or guess_name(url)
+                _nm = _safe_filename(_qo) if _qo else suggest_name(url)
                 if not _nm:
                     # Two queue entries can resolve to the same 'download.bin'
                     # (token URLs like http://host/?t=1 have no path name) and
@@ -3470,9 +4031,9 @@ def main():
                 continue
             break
         base = load_lastdir()
-        sug = os.path.join(base or '.', guess_name(url) or 'download.bin')
+        sug = os.path.join(base or '.', suggest_name(url) or 'download.bin')
         while True:
-            out = ask(f'save where? [Enter = {sug}]: ')
+            out = _clean_path(ask(f'save where? [Enter = {sug}]: '))
             if not out:
                 out = sug
                 break
@@ -3486,7 +4047,8 @@ def main():
             break
         if os.path.dirname(os.path.abspath(out)) not in ('', '.'):
             save_lastdir(os.path.dirname(os.path.abspath(out)))
-        tune = ask('chunks + threads/link? [Enter = auto auto]: ')
+        # Tuning is an expert question: the simple flow never asks it.
+        tune = ask('chunks + threads/link? [Enter = auto auto]: ') if UI_MODE == 'advanced' else ''
         rest = (tune.split()[:2] or ['auto', 'auto']) + eflags
         try:
             res = run_one(url, out, rest)
@@ -3525,8 +4087,8 @@ def main():
 def run_one(url, out, rest):
     global LOGFILE, T0, ORIG_URL, FINAL_URL, TOTAL_SIZE, TOTAL_DONE, DASH_ON, DASH_MODE, NCH, CHUNKS_DONE, G_HOST
     global V_ETAG, V_LM, RANGE_VERIFIED, EXPECT_SHA, LAST_PROGRESS, RETRY_SINGLE, EXTRA_HEADERS, OPEN_AFTER, STOP_REASON, STOP
-    global VALIDATOR_BROKEN
-    import queue as _q, shutil
+    global VALIDATOR_BROKEN, STOP_USER, CUR_Q
+    import queue as _q
     _flg, rest = _parse_flags(list(rest))
     # Priority tier for EVERY link (build 47): normal = 1 connection per link,
     # high = 4 connections per link + higher start caps, so all links run at a
@@ -3588,7 +4150,7 @@ def run_one(url, out, rest):
     EXPECT_SHA = _sha_flag or (os.environ.get('BANDWIDTHGOBLIN_SHA256') or '').strip().lower()
     if os.path.isdir(out) or (not os.path.splitext(out)[1] and not os.path.exists(out)):
         os.makedirs(out, exist_ok=True)
-        out = os.path.join(out, guess_name(ORIG_URL) or 'download.bin')
+        out = os.path.join(out, suggest_name(ORIG_URL) or 'download.bin')
     LOGDIR = os.path.join(_script_dir(), 'logs')
     try:
         os.makedirs(LOGDIR, exist_ok=True)
@@ -3651,7 +4213,7 @@ def run_one(url, out, rest):
     log(f'BandwidthGoblin v{VERSION} build {BUILD}{_VER_LABEL}')
     log('interfaces found:')
     for i, (name, ip) in enumerate(ifaces): log(f'  [{i}] {link_label(ip)}  ({name})')
-    use = [ip for _, ip in ifaces]
+    use = [ip for _, ip in ifaces] or [None]   # no adapters listed: use the default route
     sel = os.environ.get('MULTILINK_IFACES', '').strip()
     if sel and len(use) > 1:
         try:
@@ -3690,9 +4252,9 @@ def run_one(url, out, rest):
             log('unreachable links dropped: ' + ', '.join(link_label(d) for d in _dead))
         _n = len([u for u in use if u])
         if _n < 2:
-            print(CYLW('only 1 working connection - this download will run single-stream '
-                       '(combining needs 2+ live links; check the Wi-Fi/hotspot).'), flush=True)
-            log('only 1 working connection: single-stream mode')
+            print(CYLW('only 1 working connection right now - combining needs 2 or more '
+                       '(check the Wi-Fi/hotspot).'), flush=True)
+            log('only 1 working connection')
         elif _dead:
             print(CYES(f'connected links: {_n} working - combining active'), flush=True)
     with G_LOCK:
@@ -3742,7 +4304,8 @@ def run_one(url, out, rest):
     log(f'final url: {redact(url)}')
     log(f'size: {size/1e6:.1f} MB, ranges: {ar}, etag: {V_ETAG[:28] or "-"}, links: {len(use)}, chunks: {NCHUNKS}, threads/link: {TPL}')
     ar_ok = bool(ar and 'bytes' in ar.lower())
-    if size and ar_ok and len(use) >= 2 and NCHUNKS > 1:
+    # One link gets chunks too: same speed, but it can resume and shows progress.
+    if size and ar_ok and use and NCHUNKS > 1:
         _ptot, _ok_ips = 0, []
 
         def _probe_one(_ip):
@@ -3781,8 +4344,8 @@ def run_one(url, out, rest):
         else:
             ar_ok = False
             log('range probe: no link serves real 206 - single-stream mode for safety')
-    if not size or not ar_ok or len(use) < 2:
-        log('no range support or single link: downloading normally via default route')
+    if not size or not ar_ok or not use:
+        log('no range support: downloading as one stream via default route')
         use = [None]; size = size or 0
         NCHUNKS = 1; TPL = 1
         TOTAL_SIZE = size
@@ -3797,9 +4360,12 @@ def run_one(url, out, rest):
     pardir = os.path.dirname(os.path.abspath(out))
     if pardir:
         os.makedirs(pardir, exist_ok=True)
+    manifest = out + '.resume'
     if size:
         try:
             free = shutil.disk_usage(pardir or '.').free
+            if os.path.exists(manifest) and os.path.exists(out):
+                free += os.path.getsize(out)   # resuming: the partial's space is already ours
         except Exception:
             free = None
         if free is not None and free < size:
@@ -3810,12 +4376,21 @@ def run_one(url, out, rest):
             # download engine (single-connection needs the same bytes), so
             # callers must NOT fall back to plain yt-dlp (build 47 harden).
             return 'disk-space'
-    manifest = out + '.resume'
     skip = set()
+    resume_pos = {}
     have_resume = False
     if os.path.exists(manifest) and os.path.exists(out) and size:
         try:
-            m = json.load(open(manifest))
+            with open(manifest) as _mf:
+                m = json.load(_mf)
+            # The saved chunk plan wins over today's: the link count, or a typed
+            # chunk number, may differ on the rerun and that must not wipe the
+            # partial. The plan only has to fit this same file.
+            _mc = m.get('chunks')
+            if NCHUNKS > 1 and isinstance(_mc, int) and 1 < _mc <= size and m.get('size') == size and _mc != NCHUNKS:
+                log(f'resume: keeping the saved plan of {_mc} chunks')
+                NCHUNKS = _mc
+                _want_auto_chunks = False
             same_file = (m.get('url') == ORIG_URL and m.get('size') == size
                          and m.get('chunks') == NCHUNKS)
             # YouTube split streams: googlevideo re-signs the URL on every
@@ -3842,11 +4417,25 @@ def run_one(url, out, rest):
                     log('resume rejected: file changed on server (Last-Modified mismatch)')
             if same_file and os.path.getsize(out) == size:
                 skip = set(m.get('done', []))
+                resume_pos = m.get('pos') or {}
                 have_resume = True
                 log(f'resuming: skipping {len(skip)} done chunks (existing bytes kept)')
         except Exception as ex:
             log(f'ignoring resume file: {ex}')
             skip = set()
+    # Never eat a file we did not start. (A leftover .resume means it IS our
+    # partial; a 0-byte rename is our own single-stream retry landing again.)
+    _mapped = _RENAMED.get(out)
+    if _mapped and os.path.exists(_mapped) and os.path.getsize(_mapped) == 0 and not os.path.exists(_mapped + '.resume'):
+        out, manifest = _mapped, _mapped + '.resume'
+    elif (not have_resume and not OVERWRITE and not SPEEDTEST and not _flg.get('overwrite')
+            and not out.endswith('.tmp') and not os.path.exists(manifest)
+            and os.path.exists(out) and os.path.getsize(out) > 0):
+        _new = _unused_path(out)
+        print(CYLW(f'{os.path.basename(out)} already exists - keeping it and saving as {os.path.basename(_new)}'), flush=True)
+        log(f'existing file kept, saving as {_new}')
+        _RENAMED[out] = _new
+        out, manifest = _new, _new + '.resume'
     try:
         if have_resume:
             with open(out, 'r+b') as f:
@@ -3866,6 +4455,7 @@ def run_one(url, out, rest):
         log(msg)
         return 'error'
     q = _q.Queue()
+    CUR_Q = q
     # Tiny files (< 1 byte/chunk) would produce negative/empty ranges and wedge
     # the run forever; never slice a file into more chunks than it has bytes.
     if size and NCHUNKS > size:
@@ -3900,6 +4490,11 @@ def run_one(url, out, rest):
             with TOTAL_DONE_LOCK:
                 TOTAL_DONE += (e - s + 1) if isinstance(e, int) else 0
             continue
+        _rp = resume_pos.get(str(i))
+        if isinstance(_rp, int) and isinstance(e, int) and s < _rp <= e + 1:
+            with TOTAL_DONE_LOCK:
+                TOTAL_DONE += _rp - s   # part-finished chunk: pick it up where it stopped
+            s = _rp
         q.put((i, s, e))
         with CHUNK_LOCK:
             CHUNK_STATE[i] = '.'
@@ -3924,7 +4519,7 @@ def run_one(url, out, rest):
         at = _t.Thread(target=auto_tune, daemon=True)
         at.start()
     dd = None
-    if DASH_MODE == 'full' and NCHUNKS > 1:
+    if DASH_MODE == 'full':
         dd = _t.Thread(target=dash, args=(out, use, NCHUNKS), daemon=True)
         dd.start()
     workers = []
@@ -3984,16 +4579,7 @@ def run_one(url, out, rest):
                             with IP_LOCK:
                                 IP_STATE[bad_ip] = {'fails': 0, 'parked_until': time.time() + 600, 'gone': False, 'norange': True}
                             _close_ip_socks(bad_ip)
-                            with CHUNK_LOCK:
-                                for idx0, st0 in list(CHUNK_STATE.items()):
-                                    if st0 == bad_ip:
-                                        s0, e0 = CHUNK_RANGE.get(idx0, (0, 0))
-                                        if not isinstance(e0, int):
-                                            continue
-                                        CHUNK_OWNER[idx0] = ('gone', time.time())
-                                        CHUNK_END[idx0] = s0 - 1
-                                        CHUNK_STATE[idx0] = '.'
-                                        q.put((idx0, s0, e0))
+                            _requeue_link(bad_ip, q)
                             with G_LOCK:
                                 _left = [u for u in use if u]
                             if not _left:
@@ -4008,7 +4594,9 @@ def run_one(url, out, rest):
                         if failed is None:
                             failed = ex2
                             s = str(ex2)
-                            if 'web page' in s:
+                            if 'disk is full' in s:
+                                hint = 'free up some space, then run the same link again - your progress is saved.'
+                            elif 'web page' in s:
                                 hint = 'the server returned a web page instead of the file - the link may be expired or wrong.'
                             elif 'Content-Range' in s or 'size changed' in s or '412' in s:
                                 hint = 'the file changed on the server mid-download - restart it fresh.'
@@ -4020,7 +4608,7 @@ def run_one(url, out, rest):
                                 hint = 'link expired/forbidden (403) - copy a fresh link.'
                             else:
                                 hint = 'a chunk kept failing - host may throttle or the link may be dead.'
-                            print(CNO(f'Download failed: {s}') + CYLW(f'\n{hint}'), flush=True)
+                            _say(CNO(f'Download failed: {s}') + CYLW(f'\n{hint}'))
                             log(f'DOWNLOAD FAILED: {s}')
                 with CHUNK_LOCK:
                     fin = NCH > 0 and CHUNKS_DONE >= NCH
@@ -4055,7 +4643,9 @@ def run_one(url, out, rest):
             log(f'all chunks done total {time.time()-T0:.1f}s')
     RUN_DONE.set()
     if dd:
-        dd.join(timeout=10)
+        dd.join(timeout=3)
+    _screen_restore()
+    _flush_said()
     if STOP_REASON == 'speedtest':
         el = time.time() - T0
         with LINK_LOCK:
@@ -4072,15 +4662,10 @@ def run_one(url, out, rest):
         except Exception:
             pass
         return
-    print(CYES('Finalizing file - verifying all chunks...'), flush=True)
-    log('finalizing: verifying all chunks')
     done_list = [i for i in range(NCHUNKS) if CHUNK_STATE.get(i) == 'done']
     if stopped or len(done_list) < NCHUNKS:
         try:
-            with open(manifest, 'w') as rf:
-                json.dump({'url': ORIG_URL, 'size': size, 'chunks': NCHUNKS, 'done': done_list,
-                           'etag': V_ETAG, 'lastmod': V_LM, 'build': BUILD,
-                           'vok': not VALIDATOR_BROKEN}, rf)
+            _write_manifest(out, vok=not VALIDATOR_BROKEN)
             log(f'resume saved: {len(done_list)}/{NCHUNKS} chunks ({TOTAL_DONE/1e6:.1f}MB). rerun same link + same chunk count to continue.')
         except Exception as ex:
             log(f'resume save failed: {ex}')
@@ -4095,9 +4680,13 @@ def run_one(url, out, rest):
                 pass
             log('auto-restarting as single-stream to finish the file')
             return 'retry-single'
+        if failed is None:
+            print(CYLW(f'Stopped - {TOTAL_DONE/1e6:,.1f} MB saved. Run the same link again to continue.'), flush=True)
         notify('BandwidthGoblin: download failed' if failed is not None else 'BandwidthGoblin: stopped',
                f'{os.path.basename(out)} - resume saved ({len(done_list)}/{NCHUNKS} chunks)')
         return
+    print(CYES('Finished - checking the file...'), flush=True)
+    log('finalizing: verifying all chunks')
     got = os.path.getsize(out)
     log(f'saved: {out} ({got/1e6:.1f} MB) in {time.time()-T0:.1f}s')
     if TOTAL_SIZE and got != TOTAL_SIZE:

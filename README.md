@@ -61,9 +61,20 @@ python3 bandwidthgoblin.py
 ```
 
 Then: **copy a download link**, paste it in, pick where to save, and watch it
-fly. During a download: `[P]` pause, `[R]` resume, `[ESC]` stop safely, `[H]`
-in-dashboard help. Type **help** at any prompt for the feature list - no guide
+fly. During a download: `[P]` pause, `[ESC]` stop safely, `[H]` help, `[A]`
+advanced view. Type **help** at any prompt for the feature list - no guide
 needed.
+
+### Two views
+
+**Simple** (the default) shows one progress bar, the speed, the time left and
+which connections are working. Nothing else to learn.
+
+**Advanced** (press `[A]`, or start with `--advanced`) is a btop-style console
+for people who like to watch the machine run: a live speed graph, a row for each
+connection, a map of every chunk and the engine log. There you can also change
+the speed cap live (`-` `+` `0`), rest a connection (`x`), sort (`s`) and hide
+panels (`1`-`4`). Your choice is remembered.
 
 ### YouTube videos
 
@@ -86,7 +97,7 @@ height. `audio` saves just the soundtrack (MP3 when possible).
 
 YouTube downloads use the **same all-networks engine as any other link**:
 the video and audio streams are split over every connection you have, pulled
-in parallel, then merged into one file with ffmpeg. `[P]` / `[R]` / `[ESC]`
+in parallel, then merged into one file with ffmpeg. `[P]` / `[ESC]`
 work during YouTube downloads too.
 
 > The very first YouTube download quietly fetches the yt-dlp engine plus a JS
@@ -121,9 +132,10 @@ BandwidthGoblin downloads them for you automatically).
   video at the best quality it offers - or your pick (2160 / 1440 / 1080 /
   720 / 480 / audio-only) - split over **all your connections** like any
   other link
-- **Self-explanatory** - a one-time "how to drive this" intro at the first
-  prompt, the download dashboard always shows its keys
-  (`[P] pause  [R] resume  [ESC] stop  [H] help`), and typing **help** at any
+- **Keeps your files safe** - an existing file is never overwritten: the new
+  one is saved as `name (2).ext` (`--overwrite` if you do want to replace it)
+- **Self-explanatory** - the download screen always shows its keys, and typing
+  **help** at any
   prompt prints the feature list
 - **Straight to you** - the file goes from the website to your computer,
   never through a third-party server
@@ -132,7 +144,7 @@ BandwidthGoblin downloads them for you automatically).
 
 ## The honest fine print
 
-**BandwidthGoblin v2.0 build 47 is the current stable release.** It works -
+**BandwidthGoblin v2.0 build 48 is the current stable release.** It works -
 the beta label is off.
 
 - **Where the speed comes from:** two *actually different* networks (e.g.
@@ -156,6 +168,7 @@ the beta label is off.
 BandwidthGoblin/
 ├── bandwidthgoblin.py      # the whole tool - canonical copy (single file)
 ├── RUN.bat                 # Windows launcher (finds Python for you)
+├── tests/                  # offline tests: python tests/test_core.py
 ├── CHANGELOG.md
 ├── LICENSE                 # non-commercial, open-source-only license
 ├── docs/

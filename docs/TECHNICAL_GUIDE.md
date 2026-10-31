@@ -1,7 +1,7 @@
 # BandwidthGoblin — Technical Guide
 
 > **Audience:** engineers, developers, and technically curious friends.
-> This document describes **BandwidthGoblin v2.0, build 47** — the current
+> This document describes **BandwidthGoblin v2.0, build 48** — the current
 > shipped version. It assumes you have already read the friendly
 > [USER_GUIDE.md](USER_GUIDE.md) and know how to *run* the tool.
 
@@ -497,20 +497,32 @@ Other env: `MULTILINK_NODASH=1` (disable dashboard even on a TTY),
 
 ### Dashboard
 
-**Build 47: the dashboard is the only UI** — the legacy one-line `simple`
-mode was deleted; any TTY gets `full` (plain Windows consoles get ANSI/VT
-enabled via the console API first), and `off` only for piped/`--quiet`/
-`--jobs`/`MULTILINK_NODASH=1`. The layout is **resize-aware**: `_geom()` is
-re-read every 0.2 s frame, so box width (50–160 cols), meters, sparkline and
-chunk bar all re-flow when the console window changes size. Per-link row:
-name, IP, %-of-traffic, live MB/s, chunk/activity state. Keys (interactive
-only — headless automation simulates `lb.PAUSED`): `P`/`R` pause + resume,
-`ESC` stops safely, `H` toggles a
-6-second help overlay drawn *inside* the dashboard frame (rendered by the
-same 0.2 s loop, so it cannot be clobbered by repaints). The bottom line
-always shows the key hints; a one-time "how to drive this" intro appears at
-the first interactive prompt, and typing `help` / `menu` at any prompt calls
-`_mini_help()`. You never need the guide to drive it.
+**Build 48: two views.** `simple` (default) and `advanced` (`A` switches, stored
+in `.uimode`, `--simple`/`--advanced` set it). Any TTY gets a view; `off` only for
+piped/`--jobs`/`MULTILINK_NODASH=1`. `dash()` samples the engine four times a second
+into a plain snapshot dict and hands it to the pure `_frame(S, W, H, C, G)`, which
+returns exactly H lines of at most W cells. That split is what lets
+`tests/test_core.py` check every view at many window sizes without a terminal. The
+view runs on the alternate screen with line-wrap off, so it cannot scroll or leave
+debris, and `_say()` holds important messages back until it closes. Graphs use
+braille where the font has it (`BANDWIDTHGOBLIN_GRAPH=block` forces blocks; classic
+conhost defaults to blocks); `MULTILINK_ASCII=1` gives plain ASCII.
+
+Keys go through `_parse_keys()` / `_handle_key()`. Arrow keys are real events now:
+on Windows they arrive as two codes whose second byte looks like a letter (down =
+`P`), and on Unix they start with ESC. Unix input uses cbreak rather than raw mode,
+so Ctrl+C and output newlines keep working.
+
+**Build 48 engine notes.** Each worker keeps one handle on the output file for the
+whole run (`_out_fd`); reopening per chunk caused ~8 s freezes on Windows. All
+log/stats writing goes through one background thread (`_bg_writer`). `.resume` now
+stores `pos` (the next byte needed by each part-finished chunk) and is not fsynced,
+because the first fsync of a pre-sized NTFS file zero-fills the gap and freezes
+writers (measured ~6 s per 4 GB); a program crash loses nothing, a power cut can
+leave a chunk marked done but unwritten, which `--sha` catches. A saved chunk plan
+wins over the new run's plan, so a changed link count never wipes a partial. One
+link now uses the chunk engine too. Sockets are read with `read1` in blocks of up
+to 256 KB.
 
 ---
 

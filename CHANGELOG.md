@@ -3,7 +3,61 @@
 > Renamed from **LinkBoost** in build 39. Every change bumps `BUILD` by 1;
 > release tags are named `v2.0-buildN`.
 
-## v2.0 build 47 — one dashboard, subtitles, and it follows your window (current)
+## v2.0 build 48 — simple by default, advanced on one key, far fewer ways to lose work (current)
+
+**Two views**
+
+- **Simple** is the new default: one bar, speed, time left, connections.
+- **Advanced** (`A`, or `--advanced`; remembered) is a full-window btop-style
+  console: live speed graph, a row per connection, chunk map, log. It can change
+  the speed cap live (`-` `+` `0`), rest a connection (`x`), sort (`s`) and hide
+  panels (`1`-`4`).
+- The simple flow no longer asks about chunks and threads, and no longer waits 8
+  seconds on a DONE box at the end of each download.
+
+**Data-safety fixes**
+
+- A refused HEAD request could cut a download short: the error page's length was
+  taken as the file size and the short file was reported as intact.
+- Existing files were silently overwritten. They are now kept (`name (2).ext`,
+  or `--overwrite`).
+- A server-supplied name such as `..%2F..%2Fevil.bat` could write outside the save
+  folder. Names are now cleaned, including Windows-forbidden ones.
+- Rerunning with a different chunk count or number of connections wiped the partial
+  file. The saved plan now wins.
+- The ETag was sent in stray quotes, so standards-following servers looked changed
+  and the check for a file changing mid-download switched itself off.
+
+**Stability**
+
+- Stopping keeps part-finished chunks instead of only whole ones.
+- One-connection downloads can now resume and show progress.
+- ~8 second freezes on Windows, caused by reopening the output file for each chunk.
+- A slow drive or a refused log write can no longer hold up or kill a download
+  thread; logging moved to its own thread.
+- A full disk now stops at once with a clear message instead of retrying.
+- Losing a connection no longer re-downloads its finished part or overstates progress.
+- Helper threads from one download could wake inside the next and leave ghost
+  `.resume` files behind.
+- A long pause between chunks no longer trips the stall watchdog, and a resumed
+  connection no longer looks like a trickling server.
+- Resuming no longer demands free space for the part already on disk.
+
+**Keyboard**
+
+- `R` no longer pauses a running download. Down arrow no longer pauses (Windows) and
+  arrow keys no longer abort it (Linux/macOS). Ctrl+C and screen drawing no longer
+  break in raw terminal mode on Linux/macOS (fixed by reading the code; not run there).
+
+**Smaller things**
+
+- Windows in other languages no longer loses its connection list (`IPv4-Adresse`...).
+- Names from `Content-Disposition` and redirects replace `download.bin`.
+- Queue files saved by Notepad (BOM) lose no links; drag-and-drop paths in quotes work.
+- A pasted magnet or .torrent link now gets a clear "not supported yet".
+- New `tests/test_core.py`: offline regression tests.
+
+## v2.0 build 47 — one dashboard, subtitles, and it follows your window
 
 **Changes in this version**
 

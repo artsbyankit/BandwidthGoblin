@@ -37,15 +37,17 @@ home router) still works safely — it just won't double your speed.
 4. Choose a **save spot** — press **Enter** to accept the suggested folder and
    file name. (You can type your own, like `D:\Games\patch.zip` — but don't
    save straight to a drive root like `D:\`.)
-5. On the tuning question, press **Enter** for automatic (best choice).
-6. **Watch it fly.** You'll see the combined speed, each connection's speed,
-   the progress bar, and how long it's been running.
-7. Press **ESC** anytime to stop — **your progress is saved**. Run the same
+5. **Watch it fly.** You'll see the progress bar, the speed, the time left and
+   which connections are working.
+6. Press **ESC** anytime to stop — **your progress is saved**. Run the same
    link again later and it continues where it left off.
 
-**The keys you can press mid-download:** `P` = pause, `R` = resume,
-`ESC` = stop safely (progress kept), `H` = help overlay with the feature
-list — always visible at the bottom of the dashboard, no guide needed.
+**The keys you can press mid-download:** `P` = pause / continue,
+`ESC` = stop safely (progress kept), `A` = advanced view, `H` = help — always
+visible at the bottom of the screen, no guide needed.
+
+If a file with that name is already there, it is **kept**: the new download is
+saved as `name (2).ext`.
 
 When it finishes you'll see `DONE`, the file size, and the time it took. The
 finished file is **checked automatically** (size + file type + SHA-256 when
@@ -74,7 +76,7 @@ YouTube links work right out of the box — no separate program, no account.
 
 **YouTube gets the full multi-link treatment:** the video's video + audio
 streams are downloaded with **every connection you have at once** (like any
-other link) and merged back into one file. The `P` / `R` / `ESC` keys work
+other link) and merged back into one file. The `P` / `ESC` keys work
 during a YouTube download too.
 
 **Subtitles:** after the video is saved, the tool checks for captions and, if
@@ -100,18 +102,30 @@ it once in a browser first, or pick another video.
 
 ## Reading the screen
 
-- The big **▼ MB/s** number is your **combined speed** across all connections.
-- Every connection gets its own row: **green ●** = working, **cyan ●** = new,
-  **red ●** = offline (lost connection).
+**The simple view** (what you get by default) needs no explaining: a progress
+bar, your combined speed, how much is done, the time left, and which
+connections are being used.
+
+**The advanced view** (press `A`, press it again to go back; your choice is
+remembered) shows everything:
+
+- **net** - a live graph of your combined speed.
+- **links** - a row per connection: **green ●** = working, **cyan ●** = new,
+  **red ●** = offline, **yellow ●** = resting because you told it to.
+- **chunks** - the file as a map: green `■` is finished, a coloured `▣` is being
+  fetched right now (the colour matches the connection), `·` is still waiting.
+- **log** - what the engine is doing, line by line.
+
+Extra keys in the advanced view: `-` caps the speed 25% lower, `+` raises the
+cap, `0` removes it; up/down picks a connection and `x` rests or wakes it; `s`
+sorts the connections; `1` `2` `3` `4` hide or show the panels.
+
 - When YouTube is *processing* (reading video info, merging video + audio at
   the end, final integrity check) a small spinning `|\ /|` indicator with the
   phase name and an elapsed-seconds counter shows instead of a blank screen —
   it's working, not frozen.
-- The progress bar shows overall percent. The bar of `#` / `>` / `.` marks
-  finished / active / waiting chunks.
-- The dashboard is the **only** screen - every run in a normal terminal gets
-  it. It also **follows window resizes**: drag the console bigger or smaller
-  mid-download and it re-lays itself out to fit.
+- Both views **follow window resizes**. In a very small window the advanced
+  view steps back to the simple one until there is room again.
 
 ---
 
@@ -149,8 +163,8 @@ Open a terminal in the folder and run:
 | `py bandwidthgoblin.py --limit 5` | Cap the combined speed at 5 MB/s |
 | `py bandwidthgoblin.py URL --out-dir D:\dl` | Download one link straight into a folder, no questions |
 
-During a download: press **P** to pause, **R** to resume, **ESC** to stop,
-**H** for the in-dashboard help overlay. Typing **help** at any prompt prints
+During a download: press **P** to pause or continue, **ESC** to stop, **A** for
+the advanced view, **H** for help. Typing **help** at any prompt prints
 the feature list — you never need to have read this guide to drive it.
 
 ---

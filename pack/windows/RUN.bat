@@ -26,7 +26,7 @@ if not defined PY (
 REM 3) user-scope installs (winget / python.org per-user). `dir` cannot glob
 REM    middle path segments, so enumerate known versions explicitly.
 if not defined PY (
-  for %%v in (313 312 311 310 39 38) do (
+  for %%v in (315 314 313 312 311 310 39 38) do (
     if not defined PY (
       if exist "%LocalAppData%\Programs\Python\Python%%v\python.exe" (
         "%LocalAppData%\Programs\Python\Python%%v\python.exe" -c "import sys" >nul 2>nul
@@ -38,7 +38,7 @@ if not defined PY (
 
 REM 4) machine-wide installs
 if not defined PY (
-  for %%v in (313 312 311 310 39 38) do (
+  for %%v in (315 314 313 312 311 310 39 38) do (
     if not defined PY (
       if exist "%ProgramFiles%\Python%%v\python.exe" (
         "%ProgramFiles%\Python%%v\python.exe" -c "import sys" >nul 2>nul
